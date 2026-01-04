@@ -31,7 +31,14 @@ android {
 
 dependencies {
     implementation("org.nanohttpd:nanohttpd:2.3.1")
+
+    // Required for AppCompatActivity and modern Activity APIs
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.activity:activity-ktx:1.9.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    
+    // For NotificationCompat (already used in service)
+    implementation("androidx.core:core:1.13.1")
 
 }
 

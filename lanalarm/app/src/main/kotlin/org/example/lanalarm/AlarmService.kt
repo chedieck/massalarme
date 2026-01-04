@@ -1,61 +1,99 @@
 package org.example.lanalarm
 
-import android.os.Build
-import androidx.core.app.NotificationCompat
 import android.app.*
-import android.content.*
+import android.content.Intent
+import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.os.Build
+import android.os.IBinder
 import android.provider.Settings
+import androidx.core.app.NotificationCompat
 import fi.iki.elonen.NanoHTTPD
 
 class AlarmService : Service() {
 
+    private var httpServer: MyHttpServer? = null
+    private var mediaPlayer: MediaPlayer? = null
+
     override fun onCreate() {
         super.onCreate()
+        createNotificationChannel()
         startForeground(1, createNotification())
-        Thread { startServer() }.start()
+
+        httpServer = MyHttpServer(8080)
+        httpServer?.start()
     }
 
-    private fun startServer() {
-        val server = object : NanoHTTPD(8080) {
-            override fun serve(session: IHTTPSession): Response {
-                ring()
-                return newFixedLengthResponse("OK")
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "alarm_channel",
+                "LAN Alarm Service",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Keeps the alarm listener running"
             }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
-        server.start()
     }
 
     private fun createNotification(): Notification {
-        val channelId = "alarm_channel"
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                channelId,
-                "Alarm",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(channel)
-        }
-
-        return NotificationCompat.Builder(this, channelId)
+        return NotificationCompat.Builder(this, "alarm_channel")
             .setContentTitle("LAN Alarm running")
-            .setContentText("Prepare a balança")
+            .setContentText("Prepare a balança – waiting for trigger")
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
-
-    private fun ring() {
-        val mp = MediaPlayer.create(
-            this,
-            Settings.System.DEFAULT_ALARM_ALERT_URI
-        )
-        mp.isLooping = true
-        mp.start()
+    private inner class MyHttpServer(port: Int) : NanoHTTPD(port) {
+        override fun serve(session: IHTTPSession): Response {
+            return when (session.uri) {
+                "/alarm" -> {
+                    ringAlarm()
+                    newFixedLengthResponse("Alarm triggered!")
+                }
+                "/stop" -> {
+                    stopAlarm()
+                    newFixedLengthResponse("Alarm stopped")
+                }
+                else -> newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found")
+            }
+        }
     }
 
-    override fun onBind(intent: Intent?) = null
+    private fun ringAlarm() {
+        stopAlarm() // Stop any previous alarm first
+        mediaPlayer = MediaPlayer().apply {
+            setDataSource(this@AlarmService, Settings.System.DEFAULT_ALARM_ALERT_URI)
+            setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            isLooping = true
+            prepare()
+            start()
+        }
+    }
+
+    private fun stopAlarm() {
+        mediaPlayer?.stop()
+        mediaPlayer?.release()
+        mediaPlayer = null
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return START_STICKY // Restart if killed by system
+    }
+
+    override fun onDestroy() {
+        httpServer?.stop()
+        stopAlarm()
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
 }
