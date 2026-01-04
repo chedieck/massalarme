@@ -23,9 +23,19 @@ android {
             isMinifyEnabled = false
         }
     }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
 }
 
 dependencies {
     implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("androidx.core:core-ktx:1.13.1")
+
+}
+
+kotlin {
+    jvmToolchain(17)
 }
 

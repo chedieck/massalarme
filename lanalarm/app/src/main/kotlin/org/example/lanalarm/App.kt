@@ -1,4 +1,4 @@
-package com.example.lanalarm
+package org.example.lanalarm
 
 import android.app.*
 
