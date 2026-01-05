@@ -4,11 +4,17 @@ from bleak import BleakScanner
 TARGET_NAME = "MIBFS"          # Xiaomi scale name
 TARGET_UUID_PREFIX = "0000181b"           # Body Composition
 
+def format_bytes(byte_str):
+    return ''.join(f'{b:02x}' for b in byte_str)
+
+
 def callback(device, adv):
     for uuid, data in adv.service_data.items():
+        print(f'{uuid}> {format_bytes(data)}')
         if uuid.startswith(TARGET_UUID_PREFIX):
             raw = (data[-2] | (data[-1] << 8) )/ 200
-            print(f'{raw:.2f}')
+            print('raw', raw)
+            #print(f'>{raw:.2f}')
 
 
 async def main():
