@@ -198,7 +198,7 @@ async def wait_for_weight(alarm_name: str) -> bool:
                     log_weight(weight_kg, impedance, format_bytes(data), alarm_name)
                     weight_received.set()
                 else: 
-                    print(f"⚖️  {weight_kg:.2f}kg is too small to stop the alarm!")
+                    print(f"⚖️  Not fully synced yet...")
 
     print("👂 Listening for scale...")
     scanner = BleakScanner(detection_callback=callback)
