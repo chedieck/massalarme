@@ -25,17 +25,31 @@ from bleak import BleakScanner
 # ====================== CONFIGURATION ======================
 PHONE_MAC = ""          # ← CHANGE TO YOUR PHONE'S MAC ADDRESS
 LAN_NETWORK = "192.168.1.0/24"           # Your local network
+PHONE_IP = "192.168.1.3"
 MIN_KG_TRIGGER_ALARM_OFF = 49
 PORT = 8080
 YAML_FILE = Path("alarms.yaml")
 DB_FILE = Path("weights.db")
 TARGET_SCALE_NAME = "MIBFS"
 TARGET_UUID_PREFIX = "0000181b"           # Body Composition service
+SYNCING_WEIGHT_FLAG = 38           # 0x26
 
 # HTTP endpoints
 ALARM_URL_TEMPLATE = "http://{phone_ip}:{port}/alarm"
 STOP_URL_TEMPLATE  = "http://{phone_ip}:{port}/stop"
 # =========================================================
+
+def format_bytes(data: bytes) -> str:
+    """Convert bytes to clean lowercase hex string with zero-padding"""
+    return ''.join(f'{b:02x}' for b in data)
+
+def get_relevant_data(data: bytes) -> str:
+    hex = format_bytes(data)
+    first_flag = hex[2:4]
+    value_str = hex[-4:]
+    value = int(value_str[-2:] + value_str[:2], 16)
+    second_flag = hex[-8:-4]
+    return f'{first_flag}:{second_flag}:{value}'
 
 def init_db():
     """Initialize SQLite database with weights table."""
@@ -46,21 +60,22 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
             weight_kg REAL NOT NULL,
+            impedance REAL NOT NULL,
             alarm_name TEXT,
-            raw_value INTEGER
+            raw_value TEXT
         )
     """)
     conn.commit()
     conn.close()
     print(f"Database ready: {DB_FILE}")
 
-def log_weight(weight_kg: float, raw_value: int, alarm_name: str = None):
+def log_weight(weight_kg: float, impedance: float, raw_value: str, alarm_name: str = None):
     """Log weight reading to SQLite database."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO weights (timestamp, weight_kg, alarm_name, raw_value) VALUES (?, ?, ?, ?)",
-        (datetime.now().isoformat(), weight_kg, alarm_name, raw_value)
+        "INSERT INTO weights (timestamp, weight_kg, impedance, alarm_name, raw_value) VALUES (?, ?, ?, ?, ?)",
+        (datetime.now().isoformat(), weight_kg, impedance, alarm_name, raw_value)
     )
     conn.commit()
     conn.close()
@@ -68,6 +83,7 @@ def log_weight(weight_kg: float, raw_value: int, alarm_name: str = None):
 
 def discover_phone_ip() -> Optional[str]:
     """Scan LAN with nmap and find device with matching MAC address."""
+    if PHONE_IP: return PHONE_IP
     try:
         print(f"🔍 Scanning {LAN_NETWORK} for phone (MAC: {PHONE_MAC})...")
         result = subprocess.check_output(["nmap", "-sn", LAN_NETWORK], text=True)
@@ -172,11 +188,13 @@ async def wait_for_weight(alarm_name: str) -> bool:
         if device.name != TARGET_SCALE_NAME: return
         for uuid, data in adv_data.service_data.items():
             if uuid.lower().startswith(TARGET_UUID_PREFIX):
+                first_flag = data[1]
                 raw = data[-2] | (data[-1] << 8)
+                impedance = data[-4] | (data[-3] << 8)
                 weight_kg = raw / 200.0
-                if (weight_kg > MIN_KG_TRIGGER_ALARM_OFF):
+                if (first_flag == SYNCING_WEIGHT_FLAG):
                     print(f"⚖️  {weight_kg:.2f}kg (raw={raw}) → Logged!")
-                    log_weight(weight_kg, raw, alarm_name)
+                    log_weight(weight_kg, impedance, raw, alarm_name)
                     weight_received.set()
                 else: 
                     print(f"⚖️  {weight_kg:.2f}kg is too small to stop the alarm!")
