@@ -7,7 +7,7 @@ from collections import defaultdict
 from bleak import BleakScanner
 import time
 
-# Known company IDs (partial list - common ones)
+# Known company IDs (common ones - expand if needed)
 KNOWN_COMPANIES = {
     0x004C: "Apple, Inc.",
     0x0059: "Nordic Semiconductor",
@@ -16,8 +16,15 @@ KNOWN_COMPANIES = {
     0x00F3: "Xiaomi Inc.",
     0x0157: "Tile, Inc.",
     0x01B3: "Fitbit",
-    # Add more if you want: https://www.bluetooth.com/specifications/assigned-numbers/company-identifiers/
+    # More: https://www.bluetooth.com/specifications/assigned-numbers/company-identifiers/
 }
+
+def get_relevant_data(data: str) -> str:
+    first_flag = data[2:4]
+    value_str = data[-4:]
+    value = int(value_str[-2:] + value_str[:2], 16)
+    second_flag = data[-8:-4]
+    return f'{first_flag}:{second_flag}:{value}'
 
 def format_bytes(data: bytes) -> str:
     """Convert bytes to clean lowercase hex string with zero-padding"""
@@ -35,7 +42,7 @@ def decode_service_data(service_data: dict) -> str:
     lines = []
     for uuid, data in service_data.items():
         short_uuid = uuid[-8:].upper() if len(uuid) > 8 else uuid.upper()
-        hex_data = format_bytes(data)
+        hex_data = get_relevant_data(format_bytes(data))
         lines.append(f"    └ {short_uuid}: {hex_data}")
     return '\n'.join(lines) or "    └ (none)"
 
@@ -44,16 +51,16 @@ def decode_services(services: list) -> str:
         return "    └ (none)"
     return '\n'.join(f"    └ {s[-8:].upper() if len(s) > 8 else s.upper()}" for s in services)
 
-# Keep track of last seen time and data to avoid reprinting unchanged ads too often
+# Track seen devices to avoid flooding the terminal
 seen_devices = {}
-PRINT_INTERVAL = 2.0  # Only reprint a device if data changed or >2s passed
+PRINT_INTERVAL = 2.0  # Reprint only if changed or >2s passed
 
 def callback(device, advertisement_data):
+    if (not advertisement_data.service_data): return
     now = time.time()
     addr = device.address
     key = (addr, advertisement_data.rssi, str(advertisement_data))
 
-    # Only print if new, changed, or not seen recently
     last_time, last_key = seen_devices.get(addr, (0, None))
     if key != last_key or (now - last_time > PRINT_INTERVAL):
         seen_devices[addr] = (now, key)
@@ -62,21 +69,19 @@ def callback(device, advertisement_data):
         rssi = advertisement_data.rssi
         tx_power = advertisement_data.tx_power
 
-        print("\n" + "="*80)
-        print(f"[{time.strftime('%H:%M:%S')}] {device.address} | RSSI: {rssi} dBm | Name: {name}")
-        if tx_power is not None:
-            print(f"                           Tx Power: {tx_power} dBm")
+        #print("\n" + "="*80)
+        #print(f"[{time.strftime('%H:%M:%S')}] {device.address} | RSSI: {rssi} dBm | Name: {name}")
+        #if tx_power is not None:
+            #print(f"                           Tx Power: {tx_power} dBm")
 
-        print(f"  Platform Data: {dict(advertisement_data.platform_data)}")
+        #print("  Service UUIDs:")
+        #print(decode_services(advertisement_data.service_uuids))
 
-        print("  Service UUIDs:")
-        print(decode_services(advertisement_data.service_uuids))
-
-        print("  Service Data:")
+        #print("  Service Data:")
         print(decode_service_data(advertisement_data.service_data))
 
-        print("  Manufacturer Data:")
-        print(decode_manufacturer_data(advertisement_data.manufacturer_data))
+        #print("  Manufacturer Data:")
+        #print(decode_manufacturer_data(advertisement_data.manufacturer_data))
 
 async def main():
     print("Starting full BLE advertisement listener... Press Ctrl+C to stop.\n")
