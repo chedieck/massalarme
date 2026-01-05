@@ -189,12 +189,13 @@ async def wait_for_weight(alarm_name: str) -> bool:
         for uuid, data in adv_data.service_data.items():
             if uuid.lower().startswith(TARGET_UUID_PREFIX):
                 first_flag = data[1]
-                raw = data[-2] | (data[-1] << 8)
+                raw_weight = data[-2] | (data[-1] << 8)
                 impedance = data[-4] | (data[-3] << 8)
-                weight_kg = raw / 200.0
+                weight_kg = raw_weight / 200.0
+                print(get_relevant_data(data))
                 if (first_flag == SYNCING_WEIGHT_FLAG):
                     print(f"⚖️  {weight_kg:.2f}kg (raw={raw}) → Logged!")
-                    log_weight(weight_kg, impedance, raw, alarm_name)
+                    log_weight(weight_kg, impedance, format_bytes(data), alarm_name)
                     weight_received.set()
                 else: 
                     print(f"⚖️  {weight_kg:.2f}kg is too small to stop the alarm!")
