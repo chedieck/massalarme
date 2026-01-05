@@ -25,6 +25,7 @@ from bleak import BleakScanner
 # ====================== CONFIGURATION ======================
 PHONE_MAC = ""          # ← CHANGE TO YOUR PHONE'S MAC ADDRESS
 LAN_NETWORK = "192.168.1.0/24"           # Your local network
+MIN_KG_TRIGGER_ALARM_OFF = 49
 PORT = 8080
 YAML_FILE = Path("alarms.yaml")
 DB_FILE = Path("weights.db")
@@ -173,9 +174,12 @@ async def wait_for_weight(alarm_name: str) -> bool:
             if uuid.lower().startswith(TARGET_UUID_PREFIX):
                 raw = data[-2] | (data[-1] << 8)
                 weight_kg = raw / 200.0
-                print(f"⚖️  {weight_kg:.2f}kg (raw={raw}) → Logged!")
-                log_weight(weight_kg, raw, alarm_name)
-                weight_received.set()
+                if (weight_kg > MIN_KG_TRIGGER_ALARM_OFF):
+                    print(f"⚖️  {weight_kg:.2f}kg (raw={raw}) → Logged!")
+                    log_weight(weight_kg, raw, alarm_name)
+                    weight_received.set()
+                else: 
+                    print(f"⚖️  {weight_kg:.2f}kg is too small to stop the alarm!")
 
     print("👂 Listening for scale...")
     scanner = BleakScanner(detection_callback=callback)
@@ -193,9 +197,9 @@ async def main_loop():
     print("🎯 LAN Alarm Manager + Weight Logger")
     init_db()
     
-    phone_ip = discover_phone_ip()
-    if not phone_ip:
-        phone_ip = input("📱 Enter phone IP: ").strip()
+    phone_ip = None
+    while phone_ip == None:
+        phone_ip = discover_phone_ip()
     
     while True:
         alarms_config = load_alarms()
@@ -230,7 +234,7 @@ async def main_loop():
         else:
             print("⚠️  Manual intervention needed")
         
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
 
 if __name__ == "__main__":
     try:
