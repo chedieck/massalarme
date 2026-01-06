@@ -1,58 +1,55 @@
-# FILE: alarm_manager.py
 """
 LAN Alarm Manager with Xiaomi Scale Integration & Weight Logging
-
-Features:
-- Reads alarms from alarms.yaml with support for weekly, date-specific, and 'next:' alarms
-- Auto-discovers phone IP using nmap + known MAC
-- Disconnects BT 1min before alarm → triggers scale advertisement
-- HTTP alarm to phone → waits for BLE weight → stops alarm
-- **NEW: Logs all weights to SQLite database with timestamp & alarm context**
+Improvements:
+- Loops every ~1s max for frequent config checks
+- Caches next alarm to avoid constant recalculations
+- TRUE live reloading (instant on edit)
+- Logs with [HH:MM:SS] timestamps
+- Precise alarm at :00 seconds
 """
 
 import asyncio
 import subprocess
-import json
-import yaml
 import requests
+import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Optional, Tuple, Dict
 import sqlite3
-
 from bleak import BleakScanner
+import os
 
 # ====================== CONFIGURATION ======================
-PHONE_MAC = ""          # ← CHANGE TO YOUR PHONE'S MAC ADDRESS
-LAN_NETWORK = "192.168.1.0/24"           # Your local network
-PHONE_IP = "192.168.1.3"
-MIN_KG_TRIGGER_ALARM_OFF = 49
+PHONE_MAC = ""      # ← CHANGE TO YOUR PHONE'S MAC
+LAN_NETWORK = "192.168.1.0/24"
+PHONE_IP = "192.168.1.3"             # Set fixed or leave empty for auto-discovery
 PORT = 8080
 YAML_FILE = Path("alarms.yaml")
 DB_FILE = Path("weights.db")
 TARGET_SCALE_NAME = "MIBFS"
-TARGET_UUID_PREFIX = "0000181b"           # Body Composition service
-SYNCING_WEIGHT_FLAG = 38           # 0x26
-
-# HTTP endpoints
+TARGET_UUID_PREFIX = "0000181b"
+SYNCING_WEIGHT_FLAG = 38            # 0x26
 ALARM_URL_TEMPLATE = "http://{phone_ip}:{port}/alarm"
-STOP_URL_TEMPLATE  = "http://{phone_ip}:{port}/stop"
+STOP_URL_TEMPLATE = "http://{phone_ip}:{port}/stop"
 # =========================================================
 
+def log(msg: str):
+    """Print with timestamp"""
+    now = datetime.now().strftime("%H:%M:%S")
+    print(f"[{now}] {msg}")
+
 def format_bytes(data: bytes) -> str:
-    """Convert bytes to clean lowercase hex string with zero-padding"""
     return ''.join(f'{b:02x}' for b in data)
 
 def get_relevant_data(data: bytes) -> str:
-    hex = format_bytes(data)
-    first_flag = hex[2:4]
-    value_str = hex[-4:]
+    hex_str = format_bytes(data)
+    first_flag = hex_str[2:4]
+    value_str = hex_str[-4:]
     value = int(value_str[-2:] + value_str[:2], 16)
-    second_flag = hex[-8:-4]
+    second_flag = hex_str[-8:-4]
     return f'{first_flag}:{second_flag}:{value}'
 
 def init_db():
-    """Initialize SQLite database with weights table."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
@@ -67,196 +64,240 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-    print(f"Database ready: {DB_FILE}")
+    log(f"Database ready: {DB_FILE}")
 
 def log_weight(weight_kg: float, impedance: float, raw_value: str, alarm_name: str = None):
-    """Log weight reading to SQLite database."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+    ts = datetime.now().isoformat()
     cursor.execute(
         "INSERT INTO weights (timestamp, weight_kg, impedance, alarm_name, raw_value) VALUES (?, ?, ?, ?, ?)",
-        (datetime.now().isoformat(), weight_kg, impedance, alarm_name, raw_value)
+        (ts, weight_kg, impedance, alarm_name, raw_value)
     )
     conn.commit()
     conn.close()
-    print(f"✅ Logged: {weight_kg:.2f}kg (raw={raw_value}) | Alarm: {alarm_name or 'manual'}")
+    log(f"Logged: {weight_kg:.2f}kg (raw={raw_value}) | Alarm: {alarm_name or 'manual'}")
 
 def discover_phone_ip() -> Optional[str]:
-    """Scan LAN with nmap and find device with matching MAC address."""
-    if PHONE_IP: return PHONE_IP
+    if PHONE_IP:
+        return PHONE_IP
     try:
-        print(f"🔍 Scanning {LAN_NETWORK} for phone (MAC: {PHONE_MAC})...")
+        log(f"Scanning {LAN_NETWORK} for phone (MAC: {PHONE_MAC})...")
         result = subprocess.check_output(["nmap", "-sn", LAN_NETWORK], text=True)
         lines = result.splitlines()
         for i, line in enumerate(lines):
             if PHONE_MAC.lower() in line.lower():
-                if i - 2 < len(lines):
-                    ip_line = lines[i + -2]
+                if i + 2 < len(lines):
+                    ip_line = lines[i + 2]
                     if "Nmap scan report for" in ip_line:
-                        ip = ip_line.split()[-1]
-                        if ip.endswith(")"):
-                            ip = ip[:-1].split("(")[-1]
-                        print(f"📱 Phone found: {ip}")
+                        ip = ip_line.split()[-1].strip(")")
+                        if "(" in ip:
+                            ip = ip.split("(")[-1]
+                        log(f"Phone found at: {ip}")
                         return ip
     except FileNotFoundError:
-        print("❌ nmap not installed")
+        log("nmap not installed")
     except Exception as e:
-        print(f"❌ IP discovery error: {e}")
+        log(f"IP discovery error: {e}")
     return None
 
 def disconnect_all_bluetooth():
-    """Disconnect all connected Bluetooth devices."""
     try:
-        print("🔌 Disconnecting all Bluetooth devices...")
-        devices_output = subprocess.check_output(["bluetoothctl", "devices"], text=True)
+        log("Disconnecting all Bluetooth devices...")
+        output = subprocess.check_output(["bluetoothctl", "devices"], text=True)
         disconnected = 0
-        for line in devices_output.splitlines():
+        for line in output.splitlines():
             if line.startswith("Device "):
                 mac = line.split()[1]
                 info = subprocess.check_output(["bluetoothctl", "info", mac], text=True)
                 if "Connected: yes" in info:
-                    print(f"  ↳ {mac}")
-                    subprocess.call(["bluetoothctl", "disconnect", mac])
+                    log(f"Disconnecting {mac}")
+                    subprocess.call(["bluetoothctl", "disconnect", mac], stdout=subprocess.DEVNULL)
                     disconnected += 1
-        print(f"✅ {disconnected} devices disconnected")
+        log(f"{disconnected} devices disconnected")
     except Exception as e:
-        print(f"❌ Bluetooth disconnect error: {e}")
+        log(f"Bluetooth disconnect error: {e}")
 
 def trigger_alarm(phone_ip: str):
     url = ALARM_URL_TEMPLATE.format(phone_ip=phone_ip, port=PORT)
     try:
         resp = requests.get(url, timeout=5)
-        print(f"🚨 Alarm → {resp.status_code}: {resp.text.strip()}")
+        log(f"ALARM TRIGGERED → {resp.status_code}: {resp.text.strip()}")
     except Exception as e:
-        print(f"❌ Alarm failed: {e}")
+        log(f"Alarm trigger failed: {e}")
 
 def stop_alarm(phone_ip: str):
     url = STOP_URL_TEMPLATE.format(phone_ip=phone_ip, port=PORT)
     try:
         resp = requests.get(url, timeout=5)
-        print(f"🛑 Alarm stopped → {resp.status_code}: {resp.text.strip()}")
+        log(f"Alarm stopped → {resp.status_code}: {resp.text.strip()}")
     except Exception as e:
-        print(f"❌ Stop failed: {e}")
+        log(f"Stop alarm failed: {e}")
 
-def load_alarms() -> Dict:
+def load_alarms() -> Tuple[Dict, float]:
+    """Load alarms.yaml and return config + last modification time"""
     if not YAML_FILE.exists():
-        raise FileNotFoundError(f"{YAML_FILE} not found! Create alarms.yaml")
-    with open(YAML_FILE, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        log(f"{YAML_FILE} not found! Skipping load.")
+        return {}, 0.0
+    try:
+        with open(YAML_FILE, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+        mtime = os.path.getmtime(YAML_FILE)
+        return config, mtime
+    except Exception as e:
+        log(f"Failed to load alarms.yaml: {e}")
+        return {}, 0.0
 
-def get_next_alarm_time(alarms_config: Dict) -> Optional[tuple[datetime, str]]:
-    """Find soonest upcoming alarm."""
+def get_next_alarm_time(alarms_config: Dict) -> Optional[Tuple[datetime, str]]:
     now = datetime.now()
     candidates = []
-
-    # 1. 'next:' (highest priority)
+    # 'next' alarms
     if "next" in alarms_config:
         for alarm in alarms_config["next"]:
-            dt = datetime.combine(now.date(), datetime.strptime(alarm["time"], "%H:%M").time())
-            if dt <= now: dt += timedelta(days=1)
-            candidates.append((dt, alarm.get("name", "Next")))
-
-    # 2. Specific dates
+            try:
+                t = datetime.strptime(alarm["time"], "%H:%M").time()
+                dt = datetime.combine(now.date(), t)
+                if dt <= now:
+                    dt += timedelta(days=1)
+                name = alarm.get("name", "Next Alarm")
+                candidates.append((dt, name))
+            except:
+                continue
+    # date-specific
     if "date" in alarms_config:
         for alarm in alarms_config["date"]:
             try:
                 dt = datetime.strptime(f"{alarm['date']} {alarm['time']}", "%d-%m-%Y %H:%M")
                 if dt > now:
-                    candidates.append((dt, alarm.get("name", alarm['date'])))
-            except (KeyError, ValueError):
+                    name = alarm.get("name", alarm['date'])
+                    candidates.append((dt, name))
+            except:
                 continue
-
-    # 3. Weekly
+    # weekly
     weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
     for i, day in enumerate(weekdays):
         if day in alarms_config:
             for alarm in alarms_config[day]:
-                days_ahead = (i - now.weekday()) % 7
-                if days_ahead == 0:
-                    alarm_dt = datetime.combine(now.date(), datetime.strptime(alarm["time"], "%H:%M").time())
-                    if alarm_dt <= now: days_ahead = 7
-                alarm_date = now.date() + timedelta(days=days_ahead)
-                dt = datetime.combine(alarm_date, datetime.strptime(alarm["time"], "%H:%M").time())
-                candidates.append((dt, alarm.get("name", f"{day.title()}")))
-
+                try:
+                    t = datetime.strptime(alarm["time"], "%H:%M").time()
+                    days_ahead = (i - now.weekday()) % 7
+                    if days_ahead == 0 and datetime.combine(now.date(), t) <= now:
+                        days_ahead = 7
+                    target_date = now.date() + timedelta(days=days_ahead)
+                    dt = datetime.combine(target_date, t)
+                    name = alarm.get("name", day.title())
+                    candidates.append((dt, name))
+                except:
+                    continue
     return min(candidates, key=lambda x: x[0]) if candidates else None
 
 async def wait_for_weight(alarm_name: str) -> bool:
-    """Wait for scale BLE advertisement and log weight."""
     weight_received = asyncio.Event()
+
     def callback(device, adv_data):
-        if device.name != TARGET_SCALE_NAME: return
+        if device.name != TARGET_SCALE_NAME:
+            return
         for uuid, data in adv_data.service_data.items():
             if uuid.lower().startswith(TARGET_UUID_PREFIX):
                 first_flag = data[1]
                 raw_weight = data[-2] | (data[-1] << 8)
                 impedance = data[-4] | (data[-3] << 8)
                 weight_kg = raw_weight / 200.0
-                print(get_relevant_data(data))
-                if (first_flag == SYNCING_WEIGHT_FLAG):
-                    print(f"⚖️  {weight_kg:.2f}kg (raw={raw}) → Logged!")
-                    log_weight(weight_kg, impedance, format_bytes(data), alarm_name)
+                raw_hex = format_bytes(data)
+                log(get_relevant_data(data))
+                if first_flag == SYNCING_WEIGHT_FLAG:
+                    log(f"STABLE WEIGHT: {weight_kg:.2f}kg → LOGGED!")
+                    log_weight(weight_kg, impedance, raw_hex, alarm_name)
                     weight_received.set()
-                else: 
-                    print(f"⚖️  Not fully synced yet...")
+                else:
+                    log("Weight not stable yet...")
 
-    print("👂 Listening for scale...")
+    log("Listening for scale advertisement...")
     scanner = BleakScanner(detection_callback=callback)
     await scanner.start()
     try:
         await asyncio.wait_for(weight_received.wait(), timeout=300)
         return True
     except asyncio.TimeoutError:
-        print("⏰ Timeout: No weight in 5min")
+        log("Timeout: No stable weight in 5 minutes")
         return False
     finally:
         await scanner.stop()
 
 async def main_loop():
-    print("🎯 LAN Alarm Manager + Weight Logger")
+    log("LAN Alarm Manager + Weight Logger STARTED (Fast Loop + Caching)")
     init_db()
-    
-    phone_ip = None
-    while phone_ip == None:
-        phone_ip = discover_phone_ip()
-    
-    while True:
-        alarms_config = load_alarms()
-        next_alarm = get_next_alarm_time(alarms_config)
-        
-        if not next_alarm:
-            print("😴 No alarms. Sleeping 1h...")
-            await asyncio.sleep(3600)
-            continue
-        
-        alarm_dt, alarm_name = next_alarm
-        prep_time = alarm_dt - timedelta(minutes=1)
-        now = datetime.now()
-        
-        if prep_time > now:
-            wait_sec = (prep_time - now).total_seconds()
-            print(f"\n⏰ Next: {alarm_name} at {alarm_dt.strftime('%H:%M')} ({wait_sec/60:.0f}min)")
-            await asyncio.sleep(wait_sec)
-        
-        # 1min before: Disconnect BT
-        disconnect_all_bluetooth()
+
+    phone_ip = discover_phone_ip()
+    while not phone_ip:
+        log("Phone not found. Retrying in 60s...")
         await asyncio.sleep(60)
-        
-        # Trigger alarm
-        print(f"🚨 {alarm_name}")
+        phone_ip = discover_phone_ip()
+    log(f"Using phone IP: {phone_ip}")
+
+    last_mtime = 0.0
+    alarms_config = {}
+    cached_next_alarm: Optional[Tuple[datetime, str]] = None
+
+    while True:
+        # === CHECK FOR CONFIG CHANGES (every loop, fast) ===
+        new_config, new_mtime = load_alarms()
+        if new_mtime != last_mtime:
+            log("alarms.yaml UPDATED → Reloading configuration!")
+            alarms_config = new_config
+            last_mtime = new_mtime
+            cached_next_alarm = None  # Invalidate cache on change
+
+        # === GET NEXT ALARM (only if cache invalid) ===
+        if cached_next_alarm is None:
+            cached_next_alarm = get_next_alarm_time(alarms_config)
+
+        if cached_next_alarm is None:
+            await asyncio.sleep(1)  # No alarms: check again in 1s
+            continue
+
+        alarm_dt, alarm_name = cached_next_alarm
+        prep_time = alarm_dt - timedelta(minutes=1)
+        prep_time = prep_time.replace(second=0, microsecond=0)
+        now = datetime.now()
+
+        time_to_prep = (prep_time - now).total_seconds()
+
+        if time_to_prep > 0:
+            # Sleep up to 1s, then loop/check again
+            await asyncio.sleep(min(1, time_to_prep))
+            continue
+
+        # === PREP TIME REACHED: HANDLE ALARM ===
+        log(f"Prep time for '{alarm_name}' → Running now")
+        disconnect_all_bluetooth()
+        # Calculate exact time until the actual alarm (alarm_dt)
+        now = datetime.now()
+        time_to_alarm = (alarm_dt - now).total_seconds()
+
+        if time_to_alarm > 0:
+            log(f"Waiting {time_to_alarm:.1f} seconds until alarm time {alarm_dt.strftime('%H:%M:%S')}")
+            await asyncio.sleep(time_to_alarm)
+        else:
+            log("Alarm time already passed or very close – triggering immediately")
+
+        # Trigger exactly on the minute
+        log(f"TRIGGERING ALARM: {alarm_name} @ {datetime.now().strftime('%H:%M:%S')}")
         trigger_alarm(phone_ip)
-        
-        # Wait & log weight
+
+        # Wait for weight
         success = await wait_for_weight(alarm_name)
         if success:
             stop_alarm(phone_ip)
         else:
-            print("⚠️  Manual intervention needed")
-        
-        await asyncio.sleep(5)
+            log("No weight detected → Alarm may continue (manual stop needed)")
+
+        # After handling, invalidate cache to recalc next alarm
+        cached_next_alarm = None
+        await asyncio.sleep(1)  # Short pause before next cycle
 
 if __name__ == "__main__":
     try:
         asyncio.run(main_loop())
     except KeyboardInterrupt:
-        print("\n👋 Stopped")
+        log("Alarm manager stopped by user")
