@@ -206,7 +206,7 @@ async def wait_for_weight(alarm_name: str) -> bool:
                 raw_hex = format_bytes(data)
                 log(get_relevant_data(data))
                 if first_flag == SYNCING_WEIGHT_FLAG:
-                    log(f"STABLE WEIGHT: {weight_kg:.2f}kg → LOGGED!")
+                    log(f"STABLE WEIGHT: {weight_kg:.2f}kg & {impedance}Ω → LOGGED!")
                     log_weight(weight_kg, impedance, raw_hex, alarm_name)
                     weight_received.set()
                 else:
