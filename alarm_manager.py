@@ -78,26 +78,32 @@ def log_weight(weight_kg: float, impedance: float, raw_value: str, alarm_name: s
     conn.close()
     log(f"Logged: {weight_kg:.2f}kg (raw={raw_value}) | Alarm: {alarm_name or 'manual'}")
 
-def discover_phone_ip() -> str:
-    try:
-        log(f"Scanning {LAN_NETWORK} for phone (MAC: {PHONE_MAC})...")
-        result = subprocess.check_output(["nmap", "-sn", LAN_NETWORK], text=True)
-        lines = result.splitlines()
-        for i, line in enumerate(lines):
-            if PHONE_MAC.lower() in line.lower():
-                if i + 2 < len(lines):
-                    ip_line = lines[i + 2]
+async def discover_phone_ip() -> str:
+    phone_ip = None
+    while not phone_ip:
+        try:
+            log(f"Scanning {LAN_NETWORK} for phone (MAC: {PHONE_MAC})...")
+            result = subprocess.check_output(["nmap", "-sn", LAN_NETWORK], text=True)
+            lines = result.splitlines()
+            for i, line in enumerate(lines):
+
+                if PHONE_MAC.lower() in line.lower():
+                    ip_line = lines[i - 2]
                     if "Nmap scan report for" in ip_line:
                         ip = ip_line.split()[-1].strip(")")
                         if "(" in ip:
                             ip = ip.split("(")[-1]
                         log(f"Phone found at: {ip}")
-                        return ip
-    except FileNotFoundError:
-        log("nmap not installed")
-    except Exception as e:
-        log(f"IP discovery error: {e}")
-    return ''
+                        phone_ip = ip
+                        break
+        except FileNotFoundError:
+            log("nmap not installed")
+        except Exception as e:
+            log(f"IP discovery error: {e}")
+        if phone_ip == None:
+            log("Phone not found. Retrying in 10s...")
+            await asyncio.sleep(10)
+    return phone_ip
 
 def disconnect_all_bluetooth():
     try:
@@ -226,11 +232,7 @@ async def main_loop():
     log("LAN Alarm Manager + Weight Logger STARTED (Fast Loop + Caching)")
     init_db()
 
-    phone_ip = discover_phone_ip()
-    while not phone_ip:
-        log("Phone not found. Retrying in 60s...")
-        await asyncio.sleep(60)
-        phone_ip = discover_phone_ip()
+    phone_ip = await discover_phone_ip()
     log(f"Using phone IP: {phone_ip}")
 
     last_mtime = 0.0
@@ -272,7 +274,7 @@ async def main_loop():
             # === PREP TIME REACHED: HANDLE ALARM ===
             log(f"Prep time for '{alarm_name}' → Running now")
             disconnect_all_bluetooth()
-            phone_ip = discover_phone_ip()
+            phone_ip = await discover_phone_ip()
             # Calculate exact time until the actual alarm (alarm_dt)
             now = datetime.now()
             time_to_alarm = (alarm_dt - now).total_seconds()
