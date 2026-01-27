@@ -23,7 +23,6 @@ import os
 # ====================== CONFIGURATION ======================
 PHONE_MAC = ""      # ← CHANGE TO YOUR PHONE'S MAC
 LAN_NETWORK = "192.168.1.0/24"
-PHONE_IP = "192.168.1.7"             # Set fixed on router
 PORT = 8080
 YAML_FILE = Path("alarms.yaml")
 DB_FILE = Path("weights.db")
@@ -80,9 +79,6 @@ def log_weight(weight_kg: float, impedance: float, raw_value: str, alarm_name: s
     log(f"Logged: {weight_kg:.2f}kg (raw={raw_value}) | Alarm: {alarm_name or 'manual'}")
 
 def discover_phone_ip() -> str:
-    return PHONE_IP
-    """
-    @@@@@@@@ DEPRECATED @@@@@@@@@@
     try:
         log(f"Scanning {LAN_NETWORK} for phone (MAC: {PHONE_MAC})...")
         result = subprocess.check_output(["nmap", "-sn", LAN_NETWORK], text=True)
@@ -101,8 +97,7 @@ def discover_phone_ip() -> str:
         log("nmap not installed")
     except Exception as e:
         log(f"IP discovery error: {e}")
-    return None
-"""
+    return ''
 
 def disconnect_all_bluetooth():
     try:
@@ -277,6 +272,7 @@ async def main_loop():
             # === PREP TIME REACHED: HANDLE ALARM ===
             log(f"Prep time for '{alarm_name}' → Running now")
             disconnect_all_bluetooth()
+            phone_ip = discover_phone_ip()
             # Calculate exact time until the actual alarm (alarm_dt)
             now = datetime.now()
             time_to_alarm = (alarm_dt - now).total_seconds()
