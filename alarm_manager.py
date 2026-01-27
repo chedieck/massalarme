@@ -15,6 +15,7 @@ import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple, Dict
+from pprint import pprint
 import sqlite3
 from bleak import BleakScanner
 import os
@@ -22,7 +23,7 @@ import os
 # ====================== CONFIGURATION ======================
 PHONE_MAC = ""      # ← CHANGE TO YOUR PHONE'S MAC
 LAN_NETWORK = "192.168.1.0/24"
-PHONE_IP = "192.168.1.3"             # Set fixed or leave empty for auto-discovery
+PHONE_IP = "192.168.1.7"             # Set fixed on router
 PORT = 8080
 YAML_FILE = Path("alarms.yaml")
 DB_FILE = Path("weights.db")
@@ -78,9 +79,10 @@ def log_weight(weight_kg: float, impedance: float, raw_value: str, alarm_name: s
     conn.close()
     log(f"Logged: {weight_kg:.2f}kg (raw={raw_value}) | Alarm: {alarm_name or 'manual'}")
 
-def discover_phone_ip() -> Optional[str]:
-    if PHONE_IP:
-        return PHONE_IP
+def discover_phone_ip() -> str:
+    return PHONE_IP
+    """
+    @@@@@@@@ DEPRECATED @@@@@@@@@@
     try:
         log(f"Scanning {LAN_NETWORK} for phone (MAC: {PHONE_MAC})...")
         result = subprocess.check_output(["nmap", "-sn", LAN_NETWORK], text=True)
@@ -100,6 +102,7 @@ def discover_phone_ip() -> Optional[str]:
     except Exception as e:
         log(f"IP discovery error: {e}")
     return None
+"""
 
 def disconnect_all_bluetooth():
     try:
@@ -240,61 +243,173 @@ async def main_loop():
     cached_next_alarm: Optional[Tuple[datetime, str]] = None
 
     while True:
-        # === CHECK FOR CONFIG CHANGES (every loop, fast) ===
-        new_config, new_mtime = load_alarms()
-        if new_mtime != last_mtime:
-            log("alarms.yaml UPDATED → Reloading configuration!")
-            alarms_config = new_config
-            last_mtime = new_mtime
-            cached_next_alarm = None  # Invalidate cache on change
+        try:
+            # === CHECK FOR CONFIG CHANGES (every loop, fast) ===
+            new_config, new_mtime = load_alarms()
+            if new_mtime != last_mtime:
+                print("alarms.yaml UPDATED → Reloading configuration!")
+                print_next_alarms(new_config, limit=8)
+                pprint(new_config, sort_dicts=False)
+                alarms_config = new_config
+                last_mtime = new_mtime
+                cached_next_alarm = None  # Invalidate cache on change
 
-        # === GET NEXT ALARM (only if cache invalid) ===
-        if cached_next_alarm is None:
-            cached_next_alarm = get_next_alarm_time(alarms_config)
+            # === GET NEXT ALARM (only if cache invalid) ===
+            if cached_next_alarm is None:
+                cached_next_alarm = get_next_alarm_time(alarms_config)
 
-        if cached_next_alarm is None:
-            await asyncio.sleep(1)  # No alarms: check again in 1s
+            if cached_next_alarm is None:
+                await asyncio.sleep(1)  # No alarms: check again in 1s
+                continue
+
+            alarm_dt, alarm_name = cached_next_alarm
+            prep_time = alarm_dt - timedelta(minutes=1)
+            prep_time = prep_time.replace(second=0, microsecond=0)
+            now = datetime.now()
+
+            time_to_prep = (prep_time - now).total_seconds()
+
+            if time_to_prep > 0:
+                # Sleep up to 1s, then loop/check again
+                await asyncio.sleep(min(1, time_to_prep))
+                continue
+
+            # === PREP TIME REACHED: HANDLE ALARM ===
+            log(f"Prep time for '{alarm_name}' → Running now")
+            disconnect_all_bluetooth()
+            # Calculate exact time until the actual alarm (alarm_dt)
+            now = datetime.now()
+            time_to_alarm = (alarm_dt - now).total_seconds()
+
+            if time_to_alarm > 0:
+                log(f"Waiting {time_to_alarm:.1f} seconds until alarm time {alarm_dt.strftime('%H:%M:%S')}")
+                await asyncio.sleep(time_to_alarm)
+            else:
+                log("Alarm time already passed or very close – triggering immediately")
+
+            # Trigger exactly on the minute
+            log(f"TRIGGERING ALARM: {alarm_name} @ {datetime.now().strftime('%H:%M:%S')}")
+            trigger_alarm(phone_ip)
+
+            # Wait for weight
+            success = await wait_for_weight(alarm_name)
+            if success:
+                stop_alarm(phone_ip)
+            else:
+                log("No weight detected → Alarm may continue (manual stop needed)")
+
+            # After handling, invalidate cache to recalc next alarm
+            cached_next_alarm = None
+            await asyncio.sleep(1)  # Short pause before next cycle
+        except Exception as inst:
+            print(type(inst))    # the exception type
+            print(inst.args)     # arguments stored in .args
+            print(inst)
+
+
+def _iter_upcoming_alarm_datetimes(alarms_config: Dict, *, horizon_days: int = 14):
+    now = datetime.now()
+    start_date = now.date()
+    end_date = start_date + timedelta(days=horizon_days)
+
+    candidates: list[tuple[datetime, str]] = []
+
+    # "next": treated as daily repeating at HH:MM
+    for alarm in (alarms_config.get("next") or []):
+        try:
+            t = datetime.strptime(alarm["time"], "%H:%M").time()
+            name = alarm.get("name", "Next Alarm")
+        except Exception:
             continue
 
-        alarm_dt, alarm_name = cached_next_alarm
-        prep_time = alarm_dt - timedelta(minutes=1)
-        prep_time = prep_time.replace(second=0, microsecond=0)
-        now = datetime.now()
+        for d in range(horizon_days + 1):
+            dt = datetime.combine(start_date + timedelta(days=d), t).replace(second=0, microsecond=0)
+            if dt >= now:
+                candidates.append((dt, name))
+                break
 
-        time_to_prep = (prep_time - now).total_seconds()
-
-        if time_to_prep > 0:
-            # Sleep up to 1s, then loop/check again
-            await asyncio.sleep(min(1, time_to_prep))
+    # date-specific: dd-mm-YYYY HH:MM
+    for alarm in (alarms_config.get("date") or []):
+        try:
+            dt = datetime.strptime(f"{alarm['date']} {alarm['time']}", "%d-%m-%Y %H:%M")
+            dt = dt.replace(second=0, microsecond=0)
+            if dt >= now:
+                candidates.append((dt, alarm.get("name", alarm["date"])))
+        except Exception:
             continue
 
-        # === PREP TIME REACHED: HANDLE ALARM ===
-        log(f"Prep time for '{alarm_name}' → Running now")
-        disconnect_all_bluetooth()
-        # Calculate exact time until the actual alarm (alarm_dt)
-        now = datetime.now()
-        time_to_alarm = (alarm_dt - now).total_seconds()
+    # weekly: generate occurrences within horizon
+    weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    for i, day in enumerate(weekdays):
+        for alarm in (alarms_config.get(day) or []):
+            try:
+                t = datetime.strptime(alarm["time"], "%H:%M").time()
+                name = alarm.get("name", day.title())
+            except Exception:
+                continue
 
-        if time_to_alarm > 0:
-            log(f"Waiting {time_to_alarm:.1f} seconds until alarm time {alarm_dt.strftime('%H:%M:%S')}")
-            await asyncio.sleep(time_to_alarm)
+            for d in range(horizon_days + 1):
+                cur = start_date + timedelta(days=d)
+                if cur.weekday() != i:
+                    continue
+                dt = datetime.combine(cur, t).replace(second=0, microsecond=0)
+                if dt >= now:
+                    candidates.append((dt, name))
+                    break
+
+    candidates.sort(key=lambda x: x[0])
+
+    # de-dupe exact duplicates
+    seen = set()
+    out = []
+    for dt, name in candidates:
+        key = (dt, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((dt, name))
+    return out
+
+
+def print_next_alarms(alarms_config: Dict, *, limit: int = 10, horizon_days: int = 14):
+    now = datetime.now()
+    items = _iter_upcoming_alarm_datetimes(alarms_config, horizon_days=horizon_days)[:limit]
+
+    if not items:
+        log("No upcoming alarms in horizon")
+        return
+
+    log(f"Upcoming alarms (next {len(items)}):")
+    for dt, name in items:
+        dt = dt.replace(second=0, microsecond=0)
+
+        in_seconds = int((dt - now).total_seconds())
+        if in_seconds < 0:
+            continue
+
+        days, rem = divmod(in_seconds, 86400)
+        hours, rem = divmod(rem, 3600)
+        mins, secs = divmod(rem, 60)
+
+        # when your code will actually trigger:
+        prep_dt = (dt - timedelta(minutes=1)).replace(second=0, microsecond=0)
+        will_trigger_at = dt  # you sleep until alarm_dt, then trigger
+
+        # safety: if we are already past prep time, you’ll run prep immediately
+        prep_state = "OK" if prep_dt > now else "PREP NOW"
+
+        if days:
+            eta = f"{days}d {hours:02}h {mins:02}m {secs:02}s"
         else:
-            log("Alarm time already passed or very close – triggering immediately")
+            eta = f"{hours:02}h {mins:02}m {secs:02}s"
 
-        # Trigger exactly on the minute
-        log(f"TRIGGERING ALARM: {alarm_name} @ {datetime.now().strftime('%H:%M:%S')}")
-        trigger_alarm(phone_ip)
+        print(
+            f"  - {dt.strftime('%Y-%m-%d %H:%M')} | {name}"
+            f" | in {eta}"
+            f" | prep {prep_dt.strftime('%H:%M')} ({prep_state})"
+            f" | rings {will_trigger_at.strftime('%H:%M:%S')}"
+        )
 
-        # Wait for weight
-        success = await wait_for_weight(alarm_name)
-        if success:
-            stop_alarm(phone_ip)
-        else:
-            log("No weight detected → Alarm may continue (manual stop needed)")
-
-        # After handling, invalidate cache to recalc next alarm
-        cached_next_alarm = None
-        await asyncio.sleep(1)  # Short pause before next cycle
 
 if __name__ == "__main__":
     try:
