@@ -31,6 +31,7 @@ TARGET_UUID_PREFIX = "0000181b"
 SYNCING_WEIGHT_FLAG = 38            # 0x26
 ALARM_URL_TEMPLATE = "http://{phone_ip}:{port}/alarm"
 STOP_URL_TEMPLATE = "http://{phone_ip}:{port}/stop"
+MIN_WEIGHT = 68
 # =========================================================
 
 def log(msg: str):
@@ -209,7 +210,7 @@ async def wait_for_weight(alarm_name: str) -> bool:
                 weight_kg = raw_weight / 200.0
                 raw_hex = format_bytes(data)
                 log(get_relevant_data(data))
-                if first_flag == SYNCING_WEIGHT_FLAG:
+                if first_flag == SYNCING_WEIGHT_FLAG and weight_kg > MIN_WEIGHT:
                     log(f"STABLE WEIGHT: {weight_kg:.2f}kg & {impedance}Ω → LOGGED!")
                     log_weight(weight_kg, impedance, raw_hex, alarm_name)
                     weight_received.set()

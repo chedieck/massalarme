@@ -1,2 +1,0 @@
-rootProject.name = "lan-alarm"
-include(":app")
