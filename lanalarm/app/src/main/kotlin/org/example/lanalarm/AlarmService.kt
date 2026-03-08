@@ -64,19 +64,24 @@ class AlarmService : Service() {
     }
 
     private fun ringAlarm() {
-        stopAlarm() // Stop any previous alarm first
+        stopAlarm()
+
+        val afd: AssetFileDescriptor = assets.openFd("trombetas.mp3")
+
         mediaPlayer = MediaPlayer().apply {
-            setDataSource(this@AlarmService, Settings.System.DEFAULT_ALARM_ALERT_URI)
             setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
             )
+            setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
             isLooping = true
             prepare()
             start()
         }
+
+        afd.close()
     }
 
     private fun stopAlarm() {
