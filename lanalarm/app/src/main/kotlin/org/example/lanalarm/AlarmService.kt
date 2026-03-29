@@ -1,6 +1,8 @@
 package org.example.lanalarm
 
 import android.app.Notification
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -23,6 +25,8 @@ class AlarmService : Service() {
 
     companion object {
         private const val TAG = "AlarmService"
+        private const val NOTIFICATION_SERVICE_ID = 1
+        private const val NOTIFICATION_ALARM_ID = 2
         const val PREFS_NAME = "massalarme_prefs"
         const val KEY_SECRET = "shared_secret"
 
@@ -52,7 +56,7 @@ class AlarmService : Service() {
         instance = this
         audioManager = getSystemService(AudioManager::class.java)
 
-        startForeground(1, buildServiceNotification())
+        startForeground(NOTIFICATION_SERVICE_ID, buildServiceNotification())
 
         httpServer = AlarmHttpServer(8080)
         httpServer?.start()
@@ -172,12 +176,39 @@ class AlarmService : Service() {
             registerReceiver(volumeReceiver, filter)
         }
 
+        showAlarmNotification()
+
+        Log.i(TAG, "Alarm started")
+    }
+
+    private fun showAlarmNotification() {
         val dismissIntent = Intent(this, AlarmDismissActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
-        startActivity(dismissIntent)
+        val fullScreenPi = PendingIntent.getActivity(
+            this, 0, dismissIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
-        Log.i(TAG, "Alarm started")
+        val notification = NotificationCompat.Builder(this, App.CHANNEL_ALARM)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle("ALARM")
+            .setContentText("Tap to dismiss")
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setFullScreenIntent(fullScreenPi, true)
+            .setContentIntent(fullScreenPi)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .build()
+
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(NOTIFICATION_ALARM_ID, notification)
+    }
+
+    fun dismissAlarmNotification() {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.cancel(NOTIFICATION_ALARM_ID)
     }
 
     fun stopAlarm() {
@@ -186,7 +217,6 @@ class AlarmService : Service() {
         try {
             unregisterReceiver(volumeReceiver)
         } catch (_: IllegalArgumentException) {
-            // not registered
         }
 
         mediaPlayer?.let { mp ->
@@ -206,6 +236,8 @@ class AlarmService : Service() {
         }
         audioFocusRequest?.let { am?.abandonAudioFocusRequest(it) }
         audioFocusRequest = null
+
+        dismissAlarmNotification()
 
         Log.i(TAG, "Alarm stopped")
     }

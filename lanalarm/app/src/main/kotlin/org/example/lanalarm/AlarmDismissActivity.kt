@@ -35,6 +35,8 @@ class AlarmDismissActivity : AppCompatActivity() {
         inputField = findViewById(R.id.passphrase_input)
         tryAgainText = findViewById(R.id.try_again_text)
 
+        AlarmService.instance?.dismissAlarmNotification()
+
         inputField.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}

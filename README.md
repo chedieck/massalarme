@@ -1,4 +1,4 @@
-# MassAlarme
+# Massalarmee
 
 Force yourself out of bed by requiring a weigh-in on a Xiaomi BLE scale to silence
 your alarm. A Python daemon on your PC watches for the scale's Bluetooth
@@ -120,7 +120,7 @@ make apk-install
 
 On the phone:
 
-1. Open the **MassAlarme** app.
+1. Open the **Massalarmee** app.
 2. Tap **Scan QR Secret** and scan the QR code from `make secret`.
 3. Enable **Start on boot** so the service survives reboots.
 4. Grant notification and DND override permissions when prompted.

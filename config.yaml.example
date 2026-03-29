@@ -1,4 +1,4 @@
-# MassAlarme – Scale Alarm Manager
+# Massalarmee – Scale Alarm Manager
 # Example configuration. Copy to ~/.config/massalarme/config.yaml
 
 # Phone Bluetooth MAC address (used for LAN discovery via ARP)

@@ -1,5 +1,5 @@
 """
-MassAlarme – Scale Alarm Manager
+Massalarmee – Scale Alarm Manager
 
 PC daemon that monitors a Xiaomi BLE scale and controls an alarm
 on an Android phone via LAN HTTP. Reads configuration from
@@ -9,11 +9,13 @@ XDG-compliant paths.
 import argparse
 import asyncio
 import logging
+import logging.handlers
 import os
 import secrets
 import sqlite3
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -34,10 +36,41 @@ CONFIG_FILE = CONFIG_DIR / "config.yaml"
 ALARMS_FILE = CONFIG_DIR / "alarms.yaml"
 DB_FILE = DATA_DIR / "weights.db"
 
+LOG_FILE = DATA_DIR / "massalarme.log"
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 logger = logging.getLogger("massalarme")
+
+
+def _setup_logging() -> None:
+    _ensure_dirs()
+    fmt = logging.Formatter(
+        "%(asctime)s %(levelname)-8s %(message)s", datefmt="%H:%M:%S"
+    )
+
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO)
+    console.setFormatter(fmt)
+
+    file_handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=2 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)-8s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+        )
+    )
+
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(console)
+    logger.addHandler(file_handler)
+
 
 # ---------------------------------------------------------------------------
 # Default configuration values
@@ -137,7 +170,7 @@ def _show_secret_qr(secret: str) -> None:
         qr.make(fit=True)
         qr.print_ascii(tty=sys.stdout.isatty())
         logger.info(
-            "Scan the QR code above with the MassAlarme app to set the shared secret."
+            "Scan the QR code above with the Massalarmee app to set the shared secret."
         )
     except ImportError:
         logger.warning(
@@ -416,19 +449,67 @@ async def discover_phone_ip(cfg: dict) -> str:
     return phone_ip
 
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_ICON_PATH = _SCRIPT_DIR / "lanalarm" / "icon.png"
+
+_RETRY_INTERVALS = [5, 10, 20, 40, 60]
+
+
+def _notify_send(summary: str, body: str, urgency: str = "critical") -> None:
+    icon = str(_ICON_PATH) if _ICON_PATH.exists() else "alarm-clock"
+    try:
+        subprocess.Popen(
+            ["notify-send", "-u", urgency, "-i", icon, summary, body],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        logger.debug("notify-send not available")
+
+
 def _build_url(template: str, phone_ip: str, cfg: dict) -> str:
-    """Build an HTTP URL with the shared secret as query parameter."""
     base = template.format(phone_ip=phone_ip, port=cfg["port"])
     return f"{base}?key={cfg['shared_secret']}"
 
 
-def trigger_alarm(phone_ip: str, cfg: dict) -> None:
+def trigger_alarm(phone_ip: str, cfg: dict) -> bool:
     url = _build_url("http://{phone_ip}:{port}/alarm", phone_ip, cfg)
-    try:
-        resp = requests.get(url, timeout=5)
-        logger.info("ALARM TRIGGERED -> %d: %s", resp.status_code, resp.text.strip())
-    except requests.RequestException as exc:
-        logger.error("Alarm trigger failed: %s", exc)
+    for attempt, delay in enumerate(_RETRY_INTERVALS, 1):
+        try:
+            resp = requests.get(url, timeout=5)
+            if resp.status_code < 400:
+                logger.info(
+                    "ALARM TRIGGERED -> %d: %s", resp.status_code, resp.text.strip()
+                )
+                return True
+            logger.warning(
+                "Alarm trigger got %d (attempt %d/%d)",
+                resp.status_code,
+                attempt,
+                len(_RETRY_INTERVALS),
+            )
+        except requests.RequestException as exc:
+            logger.warning(
+                "Alarm trigger failed (attempt %d/%d): %s",
+                attempt,
+                len(_RETRY_INTERVALS),
+                exc,
+            )
+
+        _notify_send(
+            "MassAlarme – trigger failed",
+            f"Attempt {attempt}/{len(_RETRY_INTERVALS)}. Retrying in {delay}s...",
+        )
+
+        if attempt < len(_RETRY_INTERVALS):
+            time.sleep(delay)
+
+    logger.error("Alarm trigger failed after %d attempts", len(_RETRY_INTERVALS))
+    _notify_send(
+        "MassAlarme – ALARM FAILED",
+        f"Could not reach phone at {phone_ip} after {len(_RETRY_INTERVALS)} attempts!",
+    )
+    return False
 
 
 def stop_alarm(phone_ip: str, cfg: dict) -> None:
@@ -495,7 +576,7 @@ async def wait_for_weight(cfg: dict, alarm_name: str) -> bool:
 async def main_loop() -> None:
     cfg = load_config()
 
-    logger.info("MassAlarme daemon started.")
+    logger.info("Massalarmee daemon started.")
     init_db()
 
     phone_ip = await discover_phone_ip(cfg)
@@ -558,7 +639,6 @@ async def main_loop() -> None:
             )
             trigger_alarm(phone_ip, cfg)
 
-            # Wait for weight
             success = await wait_for_weight(cfg, alarm_name)
             if success:
                 stop_alarm(phone_ip, cfg)
@@ -583,7 +663,7 @@ async def main_loop() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="massalarme",
-        description="MassAlarme – Xiaomi BLE scale → LAN alarm on Android",
+        description="Massalarmee – Xiaomi BLE scale → LAN alarm on Android",
     )
     parser.add_argument(
         "--show-secret",
@@ -592,11 +672,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s %(levelname)-8s %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    _setup_logging()
 
     if args.show_secret:
         cfg = load_config()

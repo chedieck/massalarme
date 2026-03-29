@@ -1,5 +1,5 @@
 [Unit]
-Description=MassAlarme – Scale Alarm Manager
+Description=Massalarmee – Scale Alarm Manager
 After=bluetooth.target network-online.target
 Wants=network-online.target
 

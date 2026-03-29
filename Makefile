@@ -10,7 +10,7 @@ DATA_DIR   := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/massalarme
 SYSTEMD_DIR := $(HOME)/.config/systemd/user
 ANDROID_DIR := $(SCRIPT_DIR)lanalarm
 
-.PHONY: install venv sync run secret start stop restart status logs enable disable \
+.PHONY: install venv sync run secret start stop restart reload status logs enable disable \
         apk apk-install clean uninstall
 
 # ── Setup ──────────────────────────────────────────────────────────────
@@ -58,6 +58,9 @@ stop:
 
 restart:
 	systemctl --user restart $(SERVICE)
+
+reload: service restart
+	@echo "Reloaded unit and restarted daemon."
 
 status:
 	systemctl --user status $(SERVICE)
