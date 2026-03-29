@@ -8,5 +8,5 @@ if ! command -v uv &>/dev/null; then
     exit 1
 fi
 
-echo "=== Massalarmee Installer ==="
+echo "=== Massalarme Installer ==="
 make -C "$SCRIPT_DIR" install

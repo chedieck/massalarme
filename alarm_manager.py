@@ -1,5 +1,5 @@
 """
-Massalarmee – Scale Alarm Manager
+Massalarme – Scale Alarm Manager
 
 PC daemon that monitors a Xiaomi BLE scale and controls an alarm
 on an Android phone via LAN HTTP. Reads configuration from
@@ -191,7 +191,7 @@ def _show_secret_qr(secret: str) -> None:
         qr.make(fit=True)
         qr.print_ascii(tty=sys.stdout.isatty())
         logger.info(
-            "Scan the QR code above with the Massalarmee app to set the shared secret."
+            "Scan the QR code above with the Massalarme app to set the shared secret."
         )
     except ImportError:
         logger.warning(
@@ -726,7 +726,7 @@ async def main_loop() -> None:
     cfg = load_config()
     _current_cfg = cfg
 
-    logger.info("Massalarmee daemon started.")
+    logger.info("Massalarme daemon started.")
     init_db()
 
     alarms_config, last_mtime = load_alarms()
@@ -823,7 +823,7 @@ async def main_loop() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="massalarme",
-        description="Massalarmee – Xiaomi BLE scale → LAN alarm on Android",
+        description="Massalarme – Xiaomi BLE scale → LAN alarm on Android",
     )
     parser.add_argument(
         "--show-secret",
