@@ -1,5 +1,5 @@
-# Balanca – Scale Alarm Manager
-# Example configuration. Copy to ~/.config/balanca/config.yaml
+# MassAlarme – Scale Alarm Manager
+# Example configuration. Copy to ~/.config/massalarme/config.yaml
 
 # Phone Bluetooth MAC address (used for LAN discovery via ARP)
 phone_mac: ""

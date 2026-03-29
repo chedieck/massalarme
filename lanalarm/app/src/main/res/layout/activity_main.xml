@@ -4,14 +4,16 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:padding="24dp"
-    android:gravity="center_horizontal">
+    android:gravity="center_horizontal"
+    android:background="@color/bg_dark">
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Balanca"
+        android:text="MassAlarme"
         android:textSize="28sp"
         android:textStyle="bold"
+        android:textColor="@color/secondary_accent"
         android:layout_marginBottom="32dp" />
 
     <TextView
@@ -20,6 +22,7 @@
         android:layout_height="wrap_content"
         android:text="Service: Unknown"
         android:textSize="18sp"
+        android:textColor="@color/text_primary"
         android:layout_marginBottom="8dp" />
 
     <Button
@@ -27,12 +30,14 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Toggle Service"
+        android:backgroundTint="@color/primary_accent"
+        android:textColor="@color/text_primary"
         android:layout_marginBottom="24dp" />
 
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:background="#33888888"
+        android:background="@color/divider"
         android:layout_marginBottom="24dp" />
 
     <TextView
@@ -41,6 +46,7 @@
         android:layout_height="wrap_content"
         android:text="Secret: Not set"
         android:textSize="16sp"
+        android:textColor="@color/text_muted"
         android:layout_marginBottom="8dp" />
 
     <Button
@@ -48,12 +54,14 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Scan QR Secret"
+        android:backgroundTint="@color/primary_accent"
+        android:textColor="@color/text_primary"
         android:layout_marginBottom="24dp" />
 
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:background="#33888888"
+        android:background="@color/divider"
         android:layout_marginBottom="24dp" />
 
     <Switch
@@ -61,6 +69,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Start on boot"
-        android:textSize="16sp" />
+        android:textSize="16sp"
+        android:textColor="@color/text_primary" />
 
 </LinearLayout>

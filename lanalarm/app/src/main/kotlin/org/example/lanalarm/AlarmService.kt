@@ -23,7 +23,7 @@ class AlarmService : Service() {
 
     companion object {
         private const val TAG = "AlarmService"
-        const val PREFS_NAME = "balanca_prefs"
+        const val PREFS_NAME = "massalarme_prefs"
         const val KEY_SECRET = "shared_secret"
 
         @Volatile
@@ -61,7 +61,7 @@ class AlarmService : Service() {
 
     private fun buildServiceNotification(): Notification {
         return NotificationCompat.Builder(this, App.CHANNEL_SERVICE)
-            .setContentTitle("Balanca running")
+            .setContentTitle("MassAlarme running")
             .setContentText("Waiting for alarm trigger")
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setOngoing(true)

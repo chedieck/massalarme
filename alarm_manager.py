@@ -1,5 +1,5 @@
 """
-Balança – Scale Alarm Manager
+MassAlarme – Scale Alarm Manager
 
 PC daemon that monitors a Xiaomi BLE scale and controls an alarm
 on an Android phone via LAN HTTP. Reads configuration from
@@ -28,8 +28,8 @@ from bleak import BleakScanner
 _XDG_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
 _XDG_DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
 
-CONFIG_DIR = _XDG_CONFIG / "balanca"
-DATA_DIR = _XDG_DATA / "balanca"
+CONFIG_DIR = _XDG_CONFIG / "massalarme"
+DATA_DIR = _XDG_DATA / "massalarme"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 ALARMS_FILE = CONFIG_DIR / "alarms.yaml"
 DB_FILE = DATA_DIR / "weights.db"
@@ -37,7 +37,7 @@ DB_FILE = DATA_DIR / "weights.db"
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logger = logging.getLogger("balanca")
+logger = logging.getLogger("massalarme")
 
 # ---------------------------------------------------------------------------
 # Default configuration values
@@ -137,7 +137,7 @@ def _show_secret_qr(secret: str) -> None:
         qr.make(fit=True)
         qr.print_ascii(tty=sys.stdout.isatty())
         logger.info(
-            "Scan the QR code above with the LAN Alarm app to set the shared secret."
+            "Scan the QR code above with the MassAlarme app to set the shared secret."
         )
     except ImportError:
         logger.warning(
@@ -495,7 +495,7 @@ async def wait_for_weight(cfg: dict, alarm_name: str) -> bool:
 async def main_loop() -> None:
     cfg = load_config()
 
-    logger.info("Balanca alarm manager started.")
+    logger.info("MassAlarme daemon started.")
     init_db()
 
     phone_ip = await discover_phone_ip(cfg)
@@ -582,8 +582,8 @@ async def main_loop() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="balanca",
-        description="Scale Alarm Manager – Xiaomi BLE scale → LAN alarm on Android",
+        prog="massalarme",
+        description="MassAlarme – Xiaomi BLE scale → LAN alarm on Android",
     )
     parser.add_argument(
         "--show-secret",

@@ -10,7 +10,7 @@
 
     <application
         android:name=".App"
-        android:label="Balanca"
+        android:label="MassAlarme"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
@@ -32,6 +32,10 @@
             android:turnScreenOn="true"
             android:excludeFromRecents="true"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
+
+        <activity
+            android:name=".QrScannerActivity"
+            android:exported="false" />
 
         <service
             android:name=".AlarmService"

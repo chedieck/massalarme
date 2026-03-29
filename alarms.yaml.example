@@ -1,5 +1,5 @@
-# Balanca – Alarm Schedule
-# Copy to ~/.config/balanca/alarms.yaml
+# MassAlarme – Alarm Schedule
+# Copy to ~/.config/massalarme/alarms.yaml
 #
 # Supported sections:
 #   monday: ... sunday:   – weekly recurring alarms

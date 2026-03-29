@@ -7,8 +7,8 @@ import android.media.AudioAttributes
 
 class App : Application() {
     companion object {
-        const val CHANNEL_SERVICE = "balanca_service"
-        const val CHANNEL_ALARM = "balanca_alarm"
+        const val CHANNEL_SERVICE = "massalarme_service"
+        const val CHANNEL_ALARM = "massalarme_alarm"
     }
 
     override fun onCreate() {
@@ -19,7 +19,7 @@ class App : Application() {
         nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_SERVICE,
-                "Balanca Service",
+                "MassAlarme Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Keeps the alarm listener running"
@@ -29,7 +29,7 @@ class App : Application() {
         nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ALARM,
-                "Balanca Alarm",
+                "MassAlarme Alarm",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Alarm notifications that bypass Do Not Disturb"

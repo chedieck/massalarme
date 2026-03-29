@@ -123,9 +123,10 @@ class MainActivity : AppCompatActivity() {
     private fun launchScanner() {
         val options = ScanOptions().apply {
             setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-            setPrompt("Scan the secret QR code from the PC")
+            setPrompt("")
             setBeepEnabled(false)
-            setOrientationLocked(true)
+            setOrientationLocked(false)
+            setCaptureActivity(QrScannerActivity::class.java)
         }
         scanLauncher.launch(options)
     }

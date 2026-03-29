@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <com.journeyapps.barcodescanner.DecoratedBarcodeView
+        android:id="@+id/barcode_scanner"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:zxing_viewfinder_laser="@android:color/transparent"
+        app:zxing_viewfinder_laser_visibility="false"
+        app:zxing_viewfinder_mask="@color/scanner_mask">
+
+        <TextView
+            android:id="@+id/scan_prompt"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="80dp"
+            android:text="Scan the secret QR code"
+            android:textColor="@color/text_primary"
+            android:textSize="16sp" />
+
+    </com.journeyapps.barcodescanner.DecoratedBarcodeView>
+
+</FrameLayout>

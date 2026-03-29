@@ -4,9 +4,9 @@ SCRIPT_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 VENV       := $(SCRIPT_DIR).venv
 UV         := uv
 PYTHON     := $(VENV)/bin/python
-SERVICE    := balanca.service
-CONFIG_DIR := $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/balanca
-DATA_DIR   := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/balanca
+SERVICE    := massalarme.service
+CONFIG_DIR := $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/massalarme
+DATA_DIR   := $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/massalarme
 SYSTEMD_DIR := $(HOME)/.config/systemd/user
 ANDROID_DIR := $(SCRIPT_DIR)lanalarm
 
@@ -63,7 +63,7 @@ status:
 	systemctl --user status $(SERVICE)
 
 logs:
-	journalctl --user -u balanca -f
+	journalctl --user -u massalarme -f
 
 enable:
 	systemctl --user enable $(SERVICE)

@@ -8,5 +8,5 @@ if ! command -v uv &>/dev/null; then
     exit 1
 fi
 
-echo "=== Balanca Installer ==="
+echo "=== MassAlarme Installer ==="
 make -C "$SCRIPT_DIR" install

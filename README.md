@@ -1,4 +1,4 @@
-# Balança
+# MassAlarme
 
 Force yourself out of bed by requiring a weigh-in on a Xiaomi BLE scale to silence
 your alarm. A Python daemon on your PC watches for the scale's Bluetooth
@@ -13,7 +13,7 @@ advertisement and talks to a foreground service on your Android phone over LAN H
 └─────────┘               └──────────────┘  HTTP /stop   └──────────────┘
 ```
 
-1. Daemon loads the alarm schedule from `~/.config/balanca/alarms.yaml`.
+1. Daemon loads the alarm schedule from `~/.config/massalarme/alarms.yaml`.
 2. One minute before an alarm, it starts scanning for the phone on the LAN.
 3. At alarm time it sends `GET /alarm?key=<secret>` to the phone.
 4. Phone plays `trombetas.mp3` at max volume, locks volume, opens a full-screen
@@ -54,9 +54,9 @@ After `make install`, config files live in XDG paths:
 
 | File | Path | Purpose |
 |------|------|---------|
-| `config.yaml` | `~/.config/balanca/config.yaml` | Phone MAC, network, port, scale params, shared secret |
-| `alarms.yaml` | `~/.config/balanca/alarms.yaml` | Alarm schedule |
-| `weights.db` | `~/.local/share/balanca/weights.db` | Weight log (SQLite) |
+| `config.yaml` | `~/.config/massalarme/config.yaml` | Phone MAC, network, port, scale params, shared secret |
+| `alarms.yaml` | `~/.config/massalarme/alarms.yaml` | Alarm schedule |
+| `weights.db` | `~/.local/share/massalarme/weights.db` | Weight log (SQLite) |
 
 Edit `config.yaml` with your phone's Bluetooth MAC address and LAN subnet.
 
@@ -120,7 +120,7 @@ make apk-install
 
 On the phone:
 
-1. Open the **Balanca** app.
+1. Open the **MassAlarme** app.
 2. Tap **Scan QR Secret** and scan the QR code from `make secret`.
 3. Enable **Start on boot** so the service survives reboots.
 4. Grant notification and DND override permissions when prompted.
@@ -139,11 +139,11 @@ lanalarm/app/src/main/assets/bell.mp3
 ## Project structure
 
 ```
-balança/
+massalarme/
 ├── alarm_manager.py        # PC daemon
 ├── Makefile                # Common tasks
 ├── requirements.txt        # Python dependencies
-├── balanca.service         # systemd unit template
+├── massalarme.service      # systemd unit template
 ├── install.sh              # Setup script
 ├── config.yaml.example     # Config template
 ├── alarms.yaml.example     # Schedule template
