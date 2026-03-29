@@ -31,6 +31,8 @@ class AlarmService : Service() {
         const val KEY_SECRET = "shared_secret"
         const val KEY_ALARMS = "alarms_json"
         const val KEY_LAST_SYNC = "last_sync"
+        const val KEY_PC_IP = "pc_ip"
+        const val KEY_PC_PORT = "pc_port"
 
         @Volatile
         var instance: AlarmService? = null
@@ -104,6 +106,16 @@ class AlarmService : Service() {
                 )
             }
 
+            // Store the PC's IP so the phone can fetch alarms later
+            val pcIp = session.remoteIpAddress?.removePrefix("/")
+            if (!pcIp.isNullOrBlank()) {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_PC_IP, pcIp)
+                    .apply()
+                Log.d(TAG, "Stored PC IP: $pcIp")
+            }
+
             return when (session.uri) {
                 "/alarm" -> {
                     runOnMainAndWait { startAlarm() }
@@ -159,49 +171,61 @@ class AlarmService : Service() {
     }
 
     private fun startAlarm() {
-        stopAlarm()
+        try {
+            Log.i(TAG, "startAlarm() called — stopping any previous alarm first")
+            stopAlarm()
 
-        val am = audioManager ?: return
-        savedVolume = am.getStreamVolume(AudioManager.STREAM_ALARM)
-        am.setStreamVolume(
-            AudioManager.STREAM_ALARM,
-            am.getStreamMaxVolume(AudioManager.STREAM_ALARM),
-            0
-        )
+            val am = audioManager
+            if (am == null) {
+                Log.e(TAG, "AudioManager is null — cannot start alarm")
+                return
+            }
+            savedVolume = am.getStreamVolume(AudioManager.STREAM_ALARM)
+            am.setStreamVolume(
+                AudioManager.STREAM_ALARM,
+                am.getStreamMaxVolume(AudioManager.STREAM_ALARM),
+                0
+            )
+            Log.i(TAG, "Volume set to max (saved=$savedVolume, max=${am.getStreamMaxVolume(AudioManager.STREAM_ALARM)})")
 
-        val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ALARM)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
 
-        audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-            .setAudioAttributes(attrs)
-            .setWillPauseWhenDucked(false)
-            .build()
-        am.requestAudioFocus(audioFocusRequest!!)
+            audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(attrs)
+                .setWillPauseWhenDucked(false)
+                .build()
+            am.requestAudioFocus(audioFocusRequest!!)
+            Log.d(TAG, "Audio focus acquired")
 
-        val afd = assets.openFd("trombetas.mp3")
-        mediaPlayer = MediaPlayer().apply {
-            setAudioAttributes(attrs)
-            setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
-            isLooping = true
-            prepare()
-            start()
+            val afd = assets.openFd("trombetas.mp3")
+            mediaPlayer = MediaPlayer().apply {
+                setAudioAttributes(attrs)
+                setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+                isLooping = true
+                prepare()
+                start()
+            }
+            afd.close()
+            Log.i(TAG, "MediaPlayer created and playing trombetas.mp3")
+
+            startVolumeGuard()
+            val filter = IntentFilter("android.media.VOLUME_CHANGED_ACTION")
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(volumeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(volumeReceiver, filter)
+            }
+
+            showAlarmNotification()
+            launchDismissActivity()
+
+            Log.i(TAG, "Alarm started successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "startAlarm() FAILED", e)
         }
-        afd.close()
-
-        startVolumeGuard()
-        val filter = IntentFilter("android.media.VOLUME_CHANGED_ACTION")
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(volumeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(volumeReceiver, filter)
-        }
-
-        showAlarmNotification()
-        launchDismissActivity()
-
-        Log.i(TAG, "Alarm started")
     }
 
     private fun launchDismissActivity() {
@@ -250,6 +274,7 @@ class AlarmService : Service() {
     }
 
     fun stopAlarm() {
+        Log.i(TAG, "stopAlarm() called (mediaPlayer=${mediaPlayer != null})")
         volumeGuardRunning = false
 
         try {
@@ -261,6 +286,7 @@ class AlarmService : Service() {
             try {
                 if (mp.isPlaying) mp.stop()
                 mp.release()
+                Log.d(TAG, "MediaPlayer stopped and released")
             } catch (e: IllegalStateException) {
                 Log.w(TAG, "MediaPlayer release error: ${e.message}")
             }
@@ -270,6 +296,7 @@ class AlarmService : Service() {
         val am = audioManager
         if (am != null && savedVolume >= 0) {
             am.setStreamVolume(AudioManager.STREAM_ALARM, savedVolume, 0)
+            Log.d(TAG, "Volume restored to $savedVolume")
             savedVolume = -1
         }
         audioFocusRequest?.let { am?.abandonAudioFocusRequest(it) }
@@ -277,7 +304,7 @@ class AlarmService : Service() {
 
         dismissAlarmNotification()
 
-        Log.i(TAG, "Alarm stopped")
+        Log.i(TAG, "Alarm stopped cleanly")
     }
 
     private fun enforceMaxVolume() {

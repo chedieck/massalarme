@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
@@ -21,11 +22,21 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        private const val TAG = "MainActivity"
+        private const val KEY_OVERLAY_REQUESTED = "overlay_permission_requested"
+        private const val DEFAULT_PC_PORT = 8081
+    }
 
     private lateinit var serviceStatus: TextView
     private lateinit var secretStatus: TextView
@@ -128,7 +139,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateUI()
-        renderAlarms()
+        fetchAlarmsFromPC()
         ensureOverlayPermission()
     }
 
@@ -171,7 +182,51 @@ class MainActivity : AppCompatActivity() {
             alarmsContent.visibility = View.VISIBLE
             tabSettings.setTextColor(inactiveColor)
             tabAlarms.setTextColor(activeColor)
+            fetchAlarmsFromPC()
         }
+    }
+
+    private fun fetchAlarmsFromPC() {
+        val prefs = getSharedPreferences(AlarmService.PREFS_NAME, MODE_PRIVATE)
+        val pcIp = prefs.getString(AlarmService.KEY_PC_IP, null)
+        val secret = prefs.getString(AlarmService.KEY_SECRET, null)
+
+        renderAlarms()
+
+        if (pcIp.isNullOrBlank() || secret.isNullOrBlank()) {
+            Log.d(TAG, "Cannot fetch alarms: pcIp=$pcIp, hasSecret=${!secret.isNullOrBlank()}")
+            return
+        }
+
+        val pcPort = prefs.getInt(AlarmService.KEY_PC_PORT, DEFAULT_PC_PORT)
+
+        Thread {
+            try {
+                val url = URL("http://$pcIp:$pcPort/alarms?key=$secret")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 3000
+                conn.readTimeout = 3000
+                conn.requestMethod = "GET"
+
+                if (conn.responseCode == 200) {
+                    val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                    conn.disconnect()
+
+                    prefs.edit()
+                        .putString(AlarmService.KEY_ALARMS, body)
+                        .putLong(AlarmService.KEY_LAST_SYNC, System.currentTimeMillis())
+                        .apply()
+
+                    Log.i(TAG, "Fetched alarms from PC ($pcIp:$pcPort)")
+                    runOnUiThread { renderAlarms() }
+                } else {
+                    Log.w(TAG, "PC alarms fetch returned ${conn.responseCode}")
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to fetch alarms from PC: ${e.message}")
+            }
+        }.start()
     }
 
     private fun renderAlarms() {
@@ -330,9 +385,5 @@ class MainActivity : AppCompatActivity() {
             setCaptureActivity(QrScannerActivity::class.java)
         }
         scanLauncher.launch(options)
-    }
-
-    companion object {
-        private const val KEY_OVERLAY_REQUESTED = "overlay_permission_requested"
     }
 }

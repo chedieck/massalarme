@@ -20,8 +20,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import json
+
 import requests
 import yaml
+from aiohttp import web
 from bleak import BleakScanner
 
 # ---------------------------------------------------------------------------
@@ -79,6 +82,7 @@ _DEFAULT_CONFIG = {
     "phone_mac": "",
     "lan_network": "192.168.1.0/24",
     "port": 8080,
+    "pc_port": 8081,
     "scale_name": "MIBFS",
     "scale_uuid_prefix": "0000181b",
     "syncing_weight_flag": 0x26,
@@ -578,17 +582,55 @@ async def wait_for_weight(cfg: dict, alarm_name: str) -> bool:
 
 
 # =====================================================================
+# PC HTTP server (serves alarms to phone)
+# =====================================================================
+
+# Global ref updated by main loop so the HTTP handler always has fresh data.
+_current_alarms: Dict = {}
+_current_cfg: dict = {}
+
+
+async def _handle_alarms(request: web.Request) -> web.Response:
+    """GET /alarms?key=<secret> → return alarms config as JSON."""
+    secret = _current_cfg.get("shared_secret", "")
+    key = request.query.get("key", "")
+    if not secret or key != secret:
+        return web.Response(status=403, text="Invalid key")
+    return web.json_response(_current_alarms)
+
+
+async def _start_pc_server(cfg: dict) -> None:
+    """Start a lightweight HTTP server on pc_port to serve alarm data."""
+    pc_port = cfg.get("pc_port", 8081)
+    app = web.Application()
+    app.router.add_get("/alarms", _handle_alarms)
+
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", pc_port)
+    await site.start()
+    logger.info("PC HTTP server listening on 0.0.0.0:%d", pc_port)
+
+
+# =====================================================================
 # Main loop
 # =====================================================================
 
 
 async def main_loop() -> None:
+    global _current_alarms, _current_cfg
+
     cfg = load_config()
+    _current_cfg = cfg
 
     logger.info("Massalarmee daemon started.")
     init_db()
 
     alarms_config, last_mtime = load_alarms()
+    _current_alarms = alarms_config
+
+    # Start the PC HTTP server so the phone can pull alarms
+    await _start_pc_server(cfg)
 
     phone_ip = await discover_phone_ip(cfg)
     logger.info("Using phone IP: %s", phone_ip)
@@ -604,6 +646,7 @@ async def main_loop() -> None:
                 logger.info("alarms.yaml updated – reloading configuration.")
                 log_upcoming_alarms(new_config, limit=8)
                 alarms_config = new_config
+                _current_alarms = alarms_config
                 last_mtime = new_mtime
                 cached_next_alarm = None
                 sync_alarms_to_phone(phone_ip, cfg, alarms_config)
