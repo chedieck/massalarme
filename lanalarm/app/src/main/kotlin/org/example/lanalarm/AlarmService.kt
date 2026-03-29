@@ -29,6 +29,8 @@ class AlarmService : Service() {
         private const val NOTIFICATION_ALARM_ID = 2
         const val PREFS_NAME = "massalarme_prefs"
         const val KEY_SECRET = "shared_secret"
+        const val KEY_ALARMS = "alarms_json"
+        const val KEY_LAST_SYNC = "last_sync"
 
         @Volatile
         var instance: AlarmService? = null
@@ -111,6 +113,26 @@ class AlarmService : Service() {
                     runOnMainAndWait { stopAlarm() }
                     newFixedLengthResponse("Alarm stopped")
                 }
+                "/sync-alarms" -> {
+                    val files = HashMap<String, String>()
+                    try {
+                        session.parseBody(files)
+                        val body = files["postData"] ?: ""
+                        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                            .edit()
+                            .putString(KEY_ALARMS, body)
+                            .putLong(KEY_LAST_SYNC, System.currentTimeMillis())
+                            .apply()
+                        newFixedLengthResponse("Alarms synced")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Alarm sync failed: ${e.message}")
+                        newFixedLengthResponse(
+                            Response.Status.INTERNAL_ERROR,
+                            MIME_PLAINTEXT,
+                            "Failed to sync alarms"
+                        )
+                    }
+                }
                 else -> newFixedLengthResponse(
                     Response.Status.NOT_FOUND,
                     MIME_PLAINTEXT,
@@ -177,8 +199,24 @@ class AlarmService : Service() {
         }
 
         showAlarmNotification()
+        launchDismissActivity()
 
         Log.i(TAG, "Alarm started")
+    }
+
+    private fun launchDismissActivity() {
+        val intent = Intent(this, AlarmDismissActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            )
+        }
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Direct activity launch failed: ${e.message}")
+        }
     }
 
     private fun showAlarmNotification() {

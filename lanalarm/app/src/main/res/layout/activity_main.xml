@@ -3,73 +3,172 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="24dp"
-    android:gravity="center_horizontal"
     android:background="@color/bg_dark">
 
-    <TextView
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Massalarmee"
-        android:textSize="28sp"
-        android:textStyle="bold"
-        android:textColor="@color/secondary_accent"
-        android:layout_marginBottom="32dp" />
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="16dp"
+        android:paddingBottom="12dp">
 
-    <TextView
-        android:id="@+id/service_status"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Service: Unknown"
-        android:textSize="18sp"
-        android:textColor="@color/text_primary"
-        android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/tab_settings"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Settings"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_muted"
+            android:gravity="center" />
 
-    <Button
-        android:id="@+id/service_toggle"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Toggle Service"
-        android:backgroundTint="@color/primary_accent"
-        android:textColor="@color/text_primary"
-        android:layout_marginBottom="24dp" />
+        <TextView
+            android:id="@+id/tab_alarms"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Alarms"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_muted"
+            android:gravity="center" />
+    </LinearLayout>
 
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:background="@color/divider"
-        android:layout_marginBottom="24dp" />
+        android:background="@color/divider" />
 
-    <TextView
-        android:id="@+id/secret_status"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Secret: Not set"
-        android:textSize="16sp"
-        android:textColor="@color/text_muted"
-        android:layout_marginBottom="8dp" />
-
-    <Button
-        android:id="@+id/scan_secret"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Scan QR Secret"
-        android:backgroundTint="@color/primary_accent"
-        android:textColor="@color/text_primary"
-        android:layout_marginBottom="24dp" />
-
-    <View
+    <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:background="@color/divider"
-        android:layout_marginBottom="24dp" />
+        android:layout_height="0dp"
+        android:layout_weight="1">
 
-    <Switch
-        android:id="@+id/boot_toggle"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Start on boot"
-        android:textSize="16sp"
-        android:textColor="@color/text_primary" />
+        <LinearLayout
+            android:id="@+id/settings_content"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:padding="24dp"
+            android:gravity="center_horizontal"
+            android:background="@color/bg_dark">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="MassAlarme"
+                android:textSize="28sp"
+                android:textStyle="bold"
+                android:textColor="@color/secondary_accent"
+                android:layout_marginBottom="32dp" />
+
+            <TextView
+                android:id="@+id/service_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Service: Unknown"
+                android:textSize="18sp"
+                android:textColor="@color/text_primary"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/service_toggle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Toggle Service"
+                android:backgroundTint="@color/primary_accent"
+                android:textColor="@color/text_primary"
+                android:layout_marginBottom="24dp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider"
+                android:layout_marginBottom="24dp" />
+
+            <TextView
+                android:id="@+id/secret_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Secret: Not set"
+                android:textSize="16sp"
+                android:textColor="@color/text_muted"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/scan_secret"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Scan QR Secret"
+                android:backgroundTint="@color/primary_accent"
+                android:textColor="@color/text_primary"
+                android:layout_marginBottom="24dp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider"
+                android:layout_marginBottom="24dp" />
+
+            <Switch
+                android:id="@+id/boot_toggle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Start on boot"
+                android:textSize="16sp"
+                android:textColor="@color/text_primary" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/alarms_content"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:padding="16dp"
+            android:background="@color/bg_dark"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/alarms_empty"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="No alarms synced yet"
+                android:textSize="16sp"
+                android:textColor="@color/text_muted"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="12dp"
+                android:visibility="gone" />
+
+            <ScrollView
+                android:id="@+id/alarms_scroll"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:fillViewport="true">
+
+                <LinearLayout
+                    android:id="@+id/alarms_list"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+            </ScrollView>
+
+            <TextView
+                android:id="@+id/alarms_last_sync"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Last synced: —"
+                android:textSize="14sp"
+                android:textColor="@color/text_muted"
+                android:layout_marginTop="12dp" />
+
+        </LinearLayout>
+
+    </FrameLayout>
 
 </LinearLayout>

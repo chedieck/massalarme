@@ -521,6 +521,15 @@ def stop_alarm(phone_ip: str, cfg: dict) -> None:
         logger.error("Stop alarm failed: %s", exc)
 
 
+def sync_alarms_to_phone(phone_ip: str, cfg: dict, alarms_config: dict) -> None:
+    url = _build_url("http://{phone_ip}:{port}/sync-alarms", phone_ip, cfg)
+    try:
+        resp = requests.post(url, json=alarms_config, timeout=5)
+        logger.info("Alarms synced to phone -> %d", resp.status_code)
+    except requests.RequestException as exc:
+        logger.warning("Failed to sync alarms to phone: %s", exc)
+
+
 # =====================================================================
 # Scale listener
 # =====================================================================
@@ -579,11 +588,12 @@ async def main_loop() -> None:
     logger.info("Massalarmee daemon started.")
     init_db()
 
+    alarms_config, last_mtime = load_alarms()
+
     phone_ip = await discover_phone_ip(cfg)
     logger.info("Using phone IP: %s", phone_ip)
+    sync_alarms_to_phone(phone_ip, cfg, alarms_config)
 
-    last_mtime = 0.0
-    alarms_config: Dict = {}
     cached_next_alarm: Optional[Tuple[datetime, str]] = None
 
     while True:
@@ -596,6 +606,7 @@ async def main_loop() -> None:
                 alarms_config = new_config
                 last_mtime = new_mtime
                 cached_next_alarm = None
+                sync_alarms_to_phone(phone_ip, cfg, alarms_config)
 
             # Get next alarm
             if cached_next_alarm is None:
@@ -619,6 +630,7 @@ async def main_loop() -> None:
             # --- Prep time reached ---
             logger.info("Prep time for '%s' – running now.", alarm_name)
             phone_ip = await discover_phone_ip(cfg)
+            sync_alarms_to_phone(phone_ip, cfg, alarms_config)
 
             now = datetime.now()
             time_to_alarm = (alarm_dt - now).total_seconds()

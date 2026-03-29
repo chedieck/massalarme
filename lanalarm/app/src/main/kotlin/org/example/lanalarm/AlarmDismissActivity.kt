@@ -47,7 +47,7 @@ class AlarmDismissActivity : AppCompatActivity() {
                     finish()
                     return
                 }
-                if (current.isNotEmpty() && !PASSPHRASE.startsWith(current)) {
+                if (current.length >= PASSPHRASE.length) {
                     onWrongInput()
                 }
             }
