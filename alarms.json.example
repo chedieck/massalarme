@@ -1,0 +1,23 @@
+{
+  "monday": [
+    {"name": "Wake up", "time": "07:30"}
+  ],
+  "tuesday": [
+    {"name": "Wake up", "time": "07:30"}
+  ],
+  "wednesday": [
+    {"name": "Wake up", "time": "07:30"}
+  ],
+  "thursday": [
+    {"name": "Wake up", "time": "07:30"}
+  ],
+  "friday": [
+    {"name": "Wake up", "time": "07:30"}
+  ],
+  "saturday": [
+    {"name": "Wake up", "time": "08:00"}
+  ],
+  "sunday": [
+    {"name": "Wake up", "time": "08:00"}
+  ]
+}

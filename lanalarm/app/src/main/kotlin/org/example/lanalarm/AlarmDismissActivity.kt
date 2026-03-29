@@ -1,6 +1,10 @@
 package org.example.lanalarm
 
 import android.animation.ObjectAnimator
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.os.Bundle
@@ -24,6 +28,12 @@ class AlarmDismissActivity : AppCompatActivity() {
     private lateinit var tryAgainText: TextView
     private var bellPlayer: MediaPlayer? = null
 
+    private val alarmStoppedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            finish()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -34,6 +44,13 @@ class AlarmDismissActivity : AppCompatActivity() {
         setContentView(R.layout.activity_alarm_dismiss)
         inputField = findViewById(R.id.passphrase_input)
         tryAgainText = findViewById(R.id.try_again_text)
+
+        val filter = IntentFilter(AlarmService.ACTION_ALARM_STOPPED)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(alarmStoppedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(alarmStoppedReceiver, filter)
+        }
 
         AlarmService.instance?.dismissAlarmNotification()
 
@@ -109,6 +126,9 @@ class AlarmDismissActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        try {
+            unregisterReceiver(alarmStoppedReceiver)
+        } catch (_: IllegalArgumentException) {}
         bellPlayer?.release()
         bellPlayer = null
         super.onDestroy()

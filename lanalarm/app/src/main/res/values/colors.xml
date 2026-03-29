@@ -10,4 +10,6 @@
     <color name="scanner_mask">#CC1A3333</color>
     <color name="input_bg">#253E3E</color>
     <color name="divider">#33688888</color>
+    <color name="ws_connected">#6AA84F</color>
+    <color name="ws_disconnected">#CC6644</color>
 </resources>

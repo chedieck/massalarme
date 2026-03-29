@@ -10,6 +10,13 @@ lan_network: "192.168.1.0/24"
 # HTTP port on the Android app
 port: 8080
 
+# Port for the PC HTTP+WebSocket server
+pc_port: 8888
+
+# Interval (seconds) between phone discovery scans.
+# Lower = faster reconnect after phone IP change, higher = less network noise.
+phone_scan_interval: 10
+
 # Xiaomi scale BLE advertisement name
 scale_name: "MIBFS"
 

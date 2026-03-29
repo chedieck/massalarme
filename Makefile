@@ -32,11 +32,11 @@ configs: dirs
 	@test -f "$(CONFIG_DIR)/config.yaml" \
 		|| cp config.yaml.example "$(CONFIG_DIR)/config.yaml" \
 		&& echo "Config: $(CONFIG_DIR)/config.yaml"
-	@test -f "$(CONFIG_DIR)/alarms.yaml" \
-		|| { test -f alarms.yaml \
-			&& cp alarms.yaml "$(CONFIG_DIR)/alarms.yaml" \
-			|| cp alarms.yaml.example "$(CONFIG_DIR)/alarms.yaml"; } \
-		&& echo "Alarms: $(CONFIG_DIR)/alarms.yaml"
+	@test -f "$(CONFIG_DIR)/alarms.json" \
+		|| { test -f alarms.json \
+			&& cp alarms.json "$(CONFIG_DIR)/alarms.json" \
+			|| cp alarms.json.example "$(CONFIG_DIR)/alarms.json"; } \
+		&& echo "Alarms: $(CONFIG_DIR)/alarms.json"
 	@test -f "$(DATA_DIR)/weights.db" -o ! -f weights.db \
 		|| { cp weights.db "$(DATA_DIR)/weights.db" \
 			&& echo "Migrated weights.db"; }

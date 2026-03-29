@@ -39,11 +39,16 @@ class AlarmService : Service() {
         const val KEY_LAST_SYNC = "last_sync"
         const val KEY_PC_IP = "pc_ip"
         const val KEY_PC_PORT = "pc_port"
-        private const val DEFAULT_PC_PORT = 8081
+        const val ACTION_ALARM_STOPPED = "org.example.lanalarm.ALARM_STOPPED"
+        private const val DEFAULT_PC_PORT = 8888
         private const val WS_RECONNECT_MS = 60_000L
 
         @Volatile
         var instance: AlarmService? = null
+            private set
+
+        @Volatile
+        var wsConnected: Boolean = false
             private set
     }
 
@@ -104,6 +109,7 @@ class AlarmService : Service() {
         wsClient = okHttp.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.i(TAG, "WS: connected")
+                wsConnected = true
                 wsReconnectScheduled = false
             }
 
@@ -113,12 +119,14 @@ class AlarmService : Service() {
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 Log.i(TAG, "WS: server closing ($code: $reason)")
+                wsConnected = false
                 webSocket.close(1000, null)
                 scheduleReconnect()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "WS: connection failed: ${t.message}")
+                wsConnected = false
                 scheduleReconnect()
             }
         })
@@ -147,16 +155,18 @@ class AlarmService : Service() {
     private fun scheduleReconnect() {
         if (wsReconnectScheduled) return
         wsReconnectScheduled = true
-        mainHandler.postDelayed({
-            wsReconnectScheduled = false
-            connectWebSocket()
-        }, WS_RECONNECT_MS)
+        mainHandler.postDelayed(wsReconnectRunnable, WS_RECONNECT_MS)
+    }
+
+    private val wsReconnectRunnable = Runnable {
+        wsReconnectScheduled = false
+        connectWebSocket()
     }
 
     fun reconnectWebSocketNow() {
         wsClient?.cancel()
         wsClient = null
-        mainHandler.removeCallbacksAndMessages(null)
+        mainHandler.removeCallbacks(wsReconnectRunnable)
         wsReconnectScheduled = false
         connectWebSocket()
     }
@@ -403,7 +413,13 @@ class AlarmService : Service() {
 
         dismissAlarmNotification()
 
+        sendBroadcast(Intent(ACTION_ALARM_STOPPED).setPackage(packageName))
+
         Log.i(TAG, "Alarm stopped cleanly")
+    }
+
+    fun sendWsMessage(jsonStr: String) {
+        wsClient?.send(jsonStr) ?: Log.w(TAG, "WS: cannot send, not connected")
     }
 
     private fun enforceMaxVolume() {
@@ -431,6 +447,7 @@ class AlarmService : Service() {
 
     override fun onDestroy() {
         instance = null
+        wsConnected = false
         wsClient?.cancel()
         wsClient = null
         httpServer?.stop()

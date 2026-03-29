@@ -42,6 +42,19 @@
         android:layout_height="1dp"
         android:background="@color/divider" />
 
+    <TextView
+        android:id="@+id/ws_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="● PC: disconnected"
+        android:textSize="12sp"
+        android:textColor="@color/ws_disconnected"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp"
+        android:background="@color/bg_dark" />
+
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -157,6 +170,19 @@
                     android:layout_height="wrap_content"
                     android:orientation="vertical" />
             </ScrollView>
+
+            <Button
+                android:id="@+id/alarms_add"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="+"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:backgroundTint="@color/secondary_accent"
+                android:textColor="@color/bg_dark"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="12dp"
+                android:layout_marginBottom="4dp" />
 
             <TextView
                 android:id="@+id/alarms_last_sync"

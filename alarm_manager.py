@@ -16,7 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -37,7 +37,8 @@ _XDG_DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share
 CONFIG_DIR = _XDG_CONFIG / "massalarme"
 DATA_DIR = _XDG_DATA / "massalarme"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
-ALARMS_FILE = CONFIG_DIR / "alarms.yaml"
+ALARMS_FILE = CONFIG_DIR / "alarms.json"
+_LEGACY_ALARMS_YAML = CONFIG_DIR / "alarms.yaml"
 DB_FILE = DATA_DIR / "weights.db"
 
 LOG_FILE = DATA_DIR / "massalarme.log"
@@ -83,12 +84,13 @@ _DEFAULT_CONFIG = {
     "phone_mac": "",
     "lan_network": "192.168.1.0/24",
     "port": 8080,
-    "pc_port": 8081,
+    "pc_port": 8888,
     "scale_name": "MIBFS",
     "scale_uuid_prefix": "0000181b",
     "syncing_weight_flag": 0x26,
     "min_weight_kg": 68,
     "shared_secret": "",
+    "phone_scan_interval": 10,
 }
 
 
@@ -107,12 +109,26 @@ def _migrate_legacy_files() -> None:
     """Move files from the old working-directory layout to XDG paths."""
     script_dir = Path(__file__).resolve().parent
 
+    # Migrate legacy alarms.yaml from project dir to XDG config
     legacy_alarms = script_dir / "alarms.yaml"
-    if legacy_alarms.exists() and not ALARMS_FILE.exists():
-        logger.info("Migrating %s → %s", legacy_alarms, ALARMS_FILE)
-        ALARMS_FILE.write_text(
+    if legacy_alarms.exists() and not _LEGACY_ALARMS_YAML.exists():
+        logger.info("Migrating %s → %s", legacy_alarms, _LEGACY_ALARMS_YAML)
+        _LEGACY_ALARMS_YAML.write_text(
             legacy_alarms.read_text(encoding="utf-8"), encoding="utf-8"
         )
+
+    # Migrate alarms.yaml → alarms.json
+    if _LEGACY_ALARMS_YAML.exists() and not ALARMS_FILE.exists():
+        logger.info("Converting %s → %s", _LEGACY_ALARMS_YAML, ALARMS_FILE)
+        try:
+            with open(_LEGACY_ALARMS_YAML, encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+            ALARMS_FILE.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            logger.info("Migration complete. You can remove %s", _LEGACY_ALARMS_YAML)
+        except Exception as exc:
+            logger.error("Failed to migrate alarms YAML → JSON: %s", exc)
 
     legacy_db = script_dir / "weights.db"
     if legacy_db.exists() and not DB_FILE.exists():
@@ -191,18 +207,37 @@ def _show_secret_qr(secret: str) -> None:
 
 
 def load_alarms() -> Tuple[Dict, float]:
-    """Load alarms.yaml and return (config, mtime)."""
+    """Load alarms.json and return (config, mtime)."""
     if not ALARMS_FILE.exists():
         logger.warning("Alarms file not found: %s", ALARMS_FILE)
         return {}, 0.0
     try:
         with open(ALARMS_FILE, encoding="utf-8") as fh:
-            config = yaml.safe_load(fh) or {}
+            config = json.load(fh)
+        if not isinstance(config, dict):
+            config = {}
         mtime = os.path.getmtime(ALARMS_FILE)
         return config, mtime
-    except (yaml.YAMLError, OSError) as exc:
+    except (json.JSONDecodeError, OSError) as exc:
         logger.error("Failed to load alarms file: %s", exc)
         return {}, 0.0
+
+
+def _parse_time(time_str: str) -> dt_time:
+    """Parse a time string in HH:MM or HH:MM:SS format."""
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(time_str, fmt).time()
+        except ValueError:
+            continue
+    raise ValueError(f"Invalid time format: {time_str!r} (expected HH:MM or HH:MM:SS)")
+
+
+def _parse_datetime(date_str: str, time_str: str) -> datetime:
+    """Parse a date + time pair. Date format: DD-MM-YYYY, time: HH:MM or HH:MM:SS."""
+    t = _parse_time(time_str)
+    d = datetime.strptime(date_str, "%d-%m-%Y").date()
+    return datetime.combine(d, t)
 
 
 def get_next_alarm_time(alarms_config: Dict) -> Optional[Tuple[datetime, str]]:
@@ -210,10 +245,10 @@ def get_next_alarm_time(alarms_config: Dict) -> Optional[Tuple[datetime, str]]:
     now = datetime.now()
     candidates: List[Tuple[datetime, str]] = []
 
-    # 'next' – one-shot alarms (fires once at next occurrence of HH:MM)
+    # 'next' – one-shot alarms (fires once at next occurrence of HH:MM[:SS])
     for alarm in alarms_config.get("next") or []:
         try:
-            t = datetime.strptime(alarm["time"], "%H:%M").time()
+            t = _parse_time(alarm["time"])
         except (KeyError, ValueError):
             continue
         dt = datetime.combine(now.date(), t)
@@ -224,7 +259,7 @@ def get_next_alarm_time(alarms_config: Dict) -> Optional[Tuple[datetime, str]]:
     # 'date' – date-specific alarms
     for alarm in alarms_config.get("date") or []:
         try:
-            dt = datetime.strptime(f"{alarm['date']} {alarm['time']}", "%d-%m-%Y %H:%M")
+            dt = _parse_datetime(alarm["date"], alarm["time"])
         except (KeyError, ValueError):
             continue
         if dt > now:
@@ -243,7 +278,7 @@ def get_next_alarm_time(alarms_config: Dict) -> Optional[Tuple[datetime, str]]:
     for i, day in enumerate(weekdays):
         for alarm in alarms_config.get(day) or []:
             try:
-                t = datetime.strptime(alarm["time"], "%H:%M").time()
+                t = _parse_time(alarm["time"])
             except (KeyError, ValueError):
                 continue
             days_ahead = (i - now.weekday()) % 7
@@ -267,7 +302,7 @@ def _iter_upcoming_alarm_datetimes(
     # 'next'
     for alarm in alarms_config.get("next") or []:
         try:
-            t = datetime.strptime(alarm["time"], "%H:%M").time()
+            t = _parse_time(alarm["time"])
             name = alarm.get("name", "Next Alarm")
         except (KeyError, ValueError):
             continue
@@ -280,7 +315,7 @@ def _iter_upcoming_alarm_datetimes(
     # 'date'
     for alarm in alarms_config.get("date") or []:
         try:
-            dt = datetime.strptime(f"{alarm['date']} {alarm['time']}", "%d-%m-%Y %H:%M")
+            dt = _parse_datetime(alarm["date"], alarm["time"])
         except (KeyError, ValueError):
             continue
         if dt >= now:
@@ -299,7 +334,7 @@ def _iter_upcoming_alarm_datetimes(
     for i, day in enumerate(weekdays):
         for alarm in alarms_config.get(day) or []:
             try:
-                t = datetime.strptime(alarm["time"], "%H:%M").time()
+                t = _parse_time(alarm["time"])
                 name = alarm.get("name", day.title())
             except (KeyError, ValueError):
                 continue
@@ -448,8 +483,9 @@ async def discover_phone_ip(cfg: dict) -> str:
             logger.warning("IP discovery error: %s", exc)
 
         if phone_ip is None:
-            logger.info("Phone not found. Retrying in 10s...")
-            await asyncio.sleep(10)
+            interval = cfg.get("phone_scan_interval", 10)
+            logger.info("Phone not found. Retrying in %ds...", interval)
+            await asyncio.sleep(interval)
 
     return phone_ip
 
@@ -619,6 +655,29 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
         async for msg in ws:
             if msg.type == web.WSMsgType.TEXT:
                 logger.debug("WS recv from %s: %s", peer, msg.data[:200])
+                try:
+                    payload = json.loads(msg.data)
+                    msg_type = payload.get("type", "")
+                    if msg_type == "update_alarms":
+                        new_alarms = payload.get("data")
+                        if not isinstance(new_alarms, dict):
+                            await ws.send_json(
+                                {"type": "error", "message": "Invalid alarms data"}
+                            )
+                            continue
+                        # Write to alarms.json
+                        ALARMS_FILE.write_text(
+                            json.dumps(new_alarms, indent=2, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+                        _current_alarms.clear()
+                        _current_alarms.update(new_alarms)
+                        logger.info("Alarms updated via WS from %s", peer)
+                        await broadcast_alarms(_current_alarms)
+                    else:
+                        logger.debug("WS unknown msg type from %s: %s", peer, msg_type)
+                except (json.JSONDecodeError, Exception) as exc:
+                    logger.warning("WS bad message from %s: %s", peer, exc)
             elif msg.type in (web.WSMsgType.ERROR, web.WSMsgType.CLOSE):
                 break
     finally:
@@ -687,7 +746,7 @@ async def main_loop() -> None:
             # Check for config changes
             new_config, new_mtime = load_alarms()
             if new_mtime != last_mtime:
-                logger.info("alarms.yaml updated – reloading configuration.")
+                logger.info("alarms.json updated – reloading configuration.")
                 log_upcoming_alarms(new_config, limit=8)
                 alarms_config = new_config
                 _current_alarms = alarms_config

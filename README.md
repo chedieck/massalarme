@@ -13,7 +13,7 @@ advertisement and talks to a foreground service on your Android phone over LAN H
 └─────────┘               └──────────────┘  HTTP /stop   └──────────────┘
 ```
 
-1. Daemon loads the alarm schedule from `~/.config/massalarme/alarms.yaml`.
+1. Daemon loads the alarm schedule from `~/.config/massalarme/alarms.json`.
 2. One minute before an alarm, it starts scanning for the phone on the LAN.
 3. At alarm time it sends `GET /alarm?key=<secret>` to the phone.
 4. Phone plays `trombetas.mp3` at max volume, locks volume, opens a full-screen
@@ -55,31 +55,31 @@ After `make install`, config files live in XDG paths:
 | File | Path | Purpose |
 |------|------|---------|
 | `config.yaml` | `~/.config/massalarme/config.yaml` | Phone MAC, network, port, scale params, shared secret |
-| `alarms.yaml` | `~/.config/massalarme/alarms.yaml` | Alarm schedule |
+| `alarms.json` | `~/.config/massalarme/alarms.json` | Alarm schedule |
 | `weights.db` | `~/.local/share/massalarme/weights.db` | Weight log (SQLite) |
 
 Edit `config.yaml` with your phone's Bluetooth MAC address and LAN subnet.
 
 ### Alarm schedule format
 
-```yaml
-monday:
-  - name: "Wake up"
-    time: "07:30"
-
-saturday:
-  - name: "Lazy day"
-    time: "09:00"
-
-date:
-  - name: "Dentist"
-    time: "08:00"
-    date: "15-04-2026"
-
-next:
-  - name: "One-shot"
-    time: "06:00"
+```json
+{
+  "monday": [
+    {"name": "Wake up", "time": "07:30"}
+  ],
+  "saturday": [
+    {"name": "Lazy day", "time": "09:00"}
+  ],
+  "date": [
+    {"name": "Dentist", "time": "08:00", "date": "15-04-2026"}
+  ],
+  "next": [
+    {"name": "One-shot", "time": "06:00"}
+  ]
+}
 ```
+
+Times can be `HH:MM` or `HH:MM:SS`.
 
 ### Service management
 
@@ -146,8 +146,7 @@ massalarme/
 ├── massalarme.service      # systemd unit template
 ├── install.sh              # Setup script
 ├── config.yaml.example     # Config template
-├── alarms.yaml.example     # Schedule template
-├── alarms.yaml             # Your live schedule (migrated on install)
+├── alarms.json.example     # Schedule template
 ├── dep/                    # Dev reference (BLE protocol notes)
 └── lanalarm/               # Android app
     └── app/src/main/
