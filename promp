@@ -1,0 +1,11 @@
+Look at this app. It's a server in my pc that talks to an android app (lanalarm/) on my phone. The idea is that I have to go on my scale so it emits the bluetooth signals that I'll read and use to:
+stop the alarm on the phone (this should not be something that can be done by the phone, as of now, since is a simple request. Use a cookie, key, anything, so that IDK how to send the request but the phone and pc know)
+
+But it's very messy: no systemd daemon, no $HOME/.config/ and .share usage... Make this all nice, you get? Damon, logs, config (which rn is only done on the pc but should be done on both).
+
+right now app behavior little weird, i have to open the app after restarting the phone in order for it to work, i want a daemon that doesn't need to be open and is on by default. Opening the app should just allow me to turn on/off the daemon, and see & edit the active alarms.
+Also, stopping the alarm doesn't work. No errors on the pc, i think it's the phone that is not stopping the mp3.
+
+
+So now the app works fine, but it's weird, annoying to make changes and fragile. Your goal is to BEAUTIFY this, make it ROBUST, make it WELL-THOUGHT. "POSIX", in the broader sense of attending to usual norms. 
+

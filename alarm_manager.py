@@ -81,29 +81,37 @@ def log_weight(weight_kg: float, impedance: float, raw_value: str, alarm_name: s
 
 async def discover_phone_ip() -> str:
     phone_ip = None
+
     while not phone_ip:
         try:
-            log(f"Scanning {LAN_NETWORK} for phone (MAC: {PHONE_MAC})...")
-            result = subprocess.check_output(["nmap", "-sn", LAN_NETWORK], text=True)
-            lines = result.splitlines()
-            for i, line in enumerate(lines):
+            log(f"Scanning ARP table for phone (MAC: {PHONE_MAC})...")
 
+            # refresh neighbors (ping broadcast range quickly)
+            subprocess.run(
+                ["ping", "-c", "1", "-b", LAN_NETWORK.split("/")[0]],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            result = subprocess.check_output(["ip", "neigh"], text=True)
+
+            for line in result.splitlines():
                 if PHONE_MAC.lower() in line.lower():
-                    ip_line = lines[i - 2]
-                    if "Nmap scan report for" in ip_line:
-                        ip = ip_line.split()[-1].strip(")")
-                        if "(" in ip:
-                            ip = ip.split("(")[-1]
-                        log(f"Phone found at: {ip}")
-                        phone_ip = ip
-                        break
+                    # format: 192.168.1.10 dev wlan0 lladdr aa:bb:cc:dd:ee:ff REACHABLE
+                    ip = line.split()[0]
+                    log(f"Phone found at: {ip}")
+                    phone_ip = ip
+                    break
+
         except FileNotFoundError:
-            log("nmap not installed")
+            log("ip command not found")
         except Exception as e:
             log(f"IP discovery error: {e}")
-        if phone_ip == None:
+
+        if phone_ip is None:
             log("Phone not found. Retrying in 10s...")
             await asyncio.sleep(10)
+
     return phone_ip
 
 def disconnect_all_bluetooth():
