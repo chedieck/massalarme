@@ -165,11 +165,12 @@ class AlarmService : Service() {
         afd.close()
 
         startVolumeGuard()
-        registerReceiver(
-            volumeReceiver,
-            IntentFilter("android.media.VOLUME_CHANGED_ACTION"),
-            Context.RECEIVER_NOT_EXPORTED
-        )
+        val filter = IntentFilter("android.media.VOLUME_CHANGED_ACTION")
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(volumeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(volumeReceiver, filter)
+        }
 
         val dismissIntent = Intent(this, AlarmDismissActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)

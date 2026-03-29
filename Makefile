@@ -20,7 +20,7 @@ install: venv sync dirs configs service enable
 	@echo "Done. Run 'make secret' to display the QR code."
 
 venv:
-	$(UV) venv $(VENV)
+	@test -d $(VENV) || $(UV) venv $(VENV)
 
 sync: venv
 	$(UV) pip install -r requirements.txt --python $(PYTHON)
