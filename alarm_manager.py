@@ -689,7 +689,7 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
     if not secret or key != secret:
         return web.Response(status=403, text="Invalid key")
 
-    ws = web.WebSocketResponse(heartbeat=30)
+    ws = web.WebSocketResponse(heartbeat=15)
     await ws.prepare(request)
     _ws_clients.add(ws)
     peer = request.remote or "unknown"
@@ -707,6 +707,8 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
 
         async for msg in ws:
             if msg.type == web.WSMsgType.TEXT:
+                if not msg.data or not msg.data.strip():
+                    continue
                 logger.debug("WS recv from %s: %s", peer, msg.data[:200])
                 try:
                     payload = json.loads(msg.data)
@@ -744,6 +746,7 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
             _notify_send(
                 "Massalarme – phone disconnected",
                 f"WebSocket lost ({peer}). Waiting for reconnection...",
+                urgency="normal",
                 timeout_ms=10000,
                 replace_id=1,
             )
