@@ -175,7 +175,7 @@ class AlarmService : Service() {
 
     private fun buildServiceNotification(): Notification {
         return NotificationCompat.Builder(this, App.CHANNEL_SERVICE)
-            .setContentTitle("MassAlarme running")
+            .setContentTitle("Massalarme running")
             .setContentText("Waiting for alarm trigger")
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setOngoing(true)

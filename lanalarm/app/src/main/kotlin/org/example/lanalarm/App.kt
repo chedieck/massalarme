@@ -19,7 +19,7 @@ class App : Application() {
         nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_SERVICE,
-                "MassAlarme Service",
+                "Massalarme Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Keeps the alarm listener running"
@@ -29,7 +29,7 @@ class App : Application() {
         nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ALARM,
-                "MassAlarme Alarm",
+                "Massalarme Alarm",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Alarm notifications that bypass Do Not Disturb"

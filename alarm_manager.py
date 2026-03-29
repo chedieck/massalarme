@@ -538,7 +538,7 @@ def trigger_alarm(phone_ip: str, cfg: dict) -> bool:
             )
 
         _notify_send(
-            "MassAlarme – trigger failed",
+            "Massalarme – trigger failed",
             f"Attempt {attempt}/{len(_RETRY_INTERVALS)}. Retrying in {delay}s...",
         )
 
@@ -547,7 +547,7 @@ def trigger_alarm(phone_ip: str, cfg: dict) -> bool:
 
     logger.error("Alarm trigger failed after %d attempts", len(_RETRY_INTERVALS))
     _notify_send(
-        "MassAlarme – ALARM FAILED",
+        "Massalarme – ALARM FAILED",
         f"Could not reach phone at {phone_ip} after {len(_RETRY_INTERVALS)} attempts!",
     )
     return False
