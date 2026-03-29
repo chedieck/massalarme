@@ -180,10 +180,12 @@ class MainActivity : AppCompatActivity() {
             .getString(AlarmService.KEY_SECRET, null).isNullOrEmpty()
         secretStatus.text = if (hasSecret) "Secret: Configured" else "Secret: Not set"
 
-        val bootEnabled = packageManager.getComponentEnabledSetting(
+        val bootState = packageManager.getComponentEnabledSetting(
             ComponentName(this, BootReceiver::class.java)
-        ) == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-        bootToggle.isChecked = bootEnabled
+        )
+        // DEFAULT means manifest value (now true), so treat as enabled
+        bootToggle.isChecked = bootState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                || bootState == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
     }
 
     private fun updateWsStatus() {

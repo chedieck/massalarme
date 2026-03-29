@@ -29,6 +29,12 @@ syncing_weight_flag: 0x26
 # Minimum weight (kg) to accept as a valid reading
 min_weight_kg: 68
 
+# Alarm trigger retry: first 3 attempts at this interval (seconds)
+retry_fast_interval: 10
+
+# Alarm trigger retry: after the first 3, retry every this many seconds (forever)
+retry_interval: 120
+
 # Shared secret for authenticating requests to the phone.
 # Auto-generated on first run. Scan the QR code with the phone app.
 shared_secret: ""

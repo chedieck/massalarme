@@ -91,6 +91,8 @@ _DEFAULT_CONFIG = {
     "min_weight_kg": 68,
     "shared_secret": "",
     "phone_scan_interval": 10,
+    "retry_fast_interval": 10,
+    "retry_interval": 120,
 }
 
 
@@ -433,6 +435,18 @@ def init_db() -> None:
     logger.info("Database ready: %s", DB_FILE)
 
 
+def _get_last_weight() -> Optional[float]:
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        row = conn.execute(
+            "SELECT weight_kg FROM weights ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
 def log_weight(
     weight_kg: float, impedance: float, raw_value: str, alarm_name: Optional[str] = None
 ) -> None:
@@ -493,17 +507,28 @@ async def discover_phone_ip(cfg: dict) -> str:
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _ICON_PATH = _SCRIPT_DIR / "lanalarm" / "icon.png"
 
-_RETRY_INTERVALS = [5, 10, 20, 40, 60]
+_FAST_RETRIES = 3
 
 
-def _notify_send(summary: str, body: str, urgency: str = "critical") -> None:
+def _notify_send(
+    summary: str,
+    body: str,
+    urgency: str = "critical",
+    timeout_ms: int = 8000,
+    replace_id: Optional[int] = None,
+) -> None:
     icon = str(_ICON_PATH) if _ICON_PATH.exists() else "alarm-clock"
+    cmd = ["notify-send", "-u", urgency, "-i", icon, "-t", str(timeout_ms)]
+    if replace_id is not None:
+        cmd += [
+            "-h",
+            f"int:transient:1",
+            "-h",
+            f"string:x-dunst-stack-tag:massalarme-{replace_id}",
+        ]
+    cmd += [summary, body]
     try:
-        subprocess.Popen(
-            ["notify-send", "-u", urgency, "-i", icon, summary, body],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except FileNotFoundError:
         logger.debug("notify-send not available")
 
@@ -514,8 +539,15 @@ def _build_url(template: str, phone_ip: str, cfg: dict) -> str:
 
 
 def trigger_alarm(phone_ip: str, cfg: dict) -> bool:
+    """Try to trigger the alarm on the phone. Retries forever:
+    first 3 attempts at retry_fast_interval, then retry_interval indefinitely."""
     url = _build_url("http://{phone_ip}:{port}/alarm", phone_ip, cfg)
-    for attempt, delay in enumerate(_RETRY_INTERVALS, 1):
+    fast_interval = cfg.get("retry_fast_interval", 10)
+    long_interval = cfg.get("retry_interval", 120)
+    attempt = 0
+
+    while True:
+        attempt += 1
         try:
             resp = requests.get(url, timeout=5)
             if resp.status_code < 400:
@@ -524,33 +556,28 @@ def trigger_alarm(phone_ip: str, cfg: dict) -> bool:
                 )
                 return True
             logger.warning(
-                "Alarm trigger got %d (attempt %d/%d)",
+                "Alarm trigger got %d (attempt %d)",
                 resp.status_code,
                 attempt,
-                len(_RETRY_INTERVALS),
             )
         except requests.RequestException as exc:
             logger.warning(
-                "Alarm trigger failed (attempt %d/%d): %s",
+                "Alarm trigger failed (attempt %d): %s",
                 attempt,
-                len(_RETRY_INTERVALS),
                 exc,
             )
 
+        if attempt <= _FAST_RETRIES:
+            delay = fast_interval
+        else:
+            delay = long_interval
+
         _notify_send(
             "Massalarme – trigger failed",
-            f"Attempt {attempt}/{len(_RETRY_INTERVALS)}. Retrying in {delay}s...",
+            f"Attempt {attempt}. Retrying in {delay}s...",
         )
 
-        if attempt < len(_RETRY_INTERVALS):
-            time.sleep(delay)
-
-    logger.error("Alarm trigger failed after %d attempts", len(_RETRY_INTERVALS))
-    _notify_send(
-        "Massalarme – ALARM FAILED",
-        f"Could not reach phone at {phone_ip} after {len(_RETRY_INTERVALS)} attempts!",
-    )
-    return False
+        time.sleep(delay)
 
 
 def stop_alarm(phone_ip: str, cfg: dict) -> None:
@@ -576,9 +603,15 @@ def sync_alarms_to_phone(phone_ip: str, cfg: dict, alarms_config: dict) -> None:
 # =====================================================================
 
 
-async def wait_for_weight(cfg: dict, alarm_name: str) -> bool:
-    """Listen for BLE advertisements until a stable weight is detected."""
+async def wait_for_weight(cfg: dict, alarm_name: str) -> Optional[float]:
+    """Listen for BLE advertisements until a stable weight is detected,
+    or until the alarm is dismissed via passphrase. Returns weight_kg on
+    scale success, None on passphrase dismiss or timeout."""
+    global _alarm_dismissed
+    _alarm_dismissed = asyncio.Event()
+
     weight_received = asyncio.Event()
+    detected_weight: List[float] = []
     scale_name = cfg["scale_name"]
     uuid_prefix = cfg["scale_uuid_prefix"]
     sync_flag = cfg["syncing_weight_flag"]
@@ -601,6 +634,7 @@ async def wait_for_weight(cfg: dict, alarm_name: str) -> bool:
             if first_flag == sync_flag and weight_kg > min_weight:
                 logger.info("STABLE WEIGHT: %.2fkg & %d ohm", weight_kg, impedance)
                 log_weight(weight_kg, impedance, raw_hex, alarm_name)
+                detected_weight.append(weight_kg)
                 weight_received.set()
             else:
                 logger.debug("Weight not stable yet...")
@@ -609,13 +643,24 @@ async def wait_for_weight(cfg: dict, alarm_name: str) -> bool:
     scanner = BleakScanner(detection_callback=on_advertisement)
     await scanner.start()
     try:
-        await asyncio.wait_for(weight_received.wait(), timeout=300)
-        return True
-    except asyncio.TimeoutError:
-        logger.warning("Timeout: No stable weight in 5 minutes.")
-        return False
+        done, _ = await asyncio.wait(
+            [
+                asyncio.create_task(weight_received.wait()),
+                asyncio.create_task(_alarm_dismissed.wait()),
+            ],
+            timeout=300,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            logger.warning("Timeout: No stable weight in 5 minutes.")
+            return None
+        if _alarm_dismissed.is_set():
+            logger.info("Alarm dismissed via passphrase – stopping scale listener.")
+            return None
+        return detected_weight[0] if detected_weight else None
     finally:
         await scanner.stop()
+        _alarm_dismissed = None
 
 
 # =====================================================================
@@ -625,6 +670,7 @@ async def wait_for_weight(cfg: dict, alarm_name: str) -> bool:
 _current_alarms: Dict = {}
 _current_cfg: dict = {}
 _ws_clients: weakref.WeakSet[web.WebSocketResponse] = weakref.WeakSet()
+_alarm_dismissed: Optional[asyncio.Event] = None
 
 
 async def _handle_alarms(request: web.Request) -> web.Response:
@@ -648,6 +694,13 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
     _ws_clients.add(ws)
     peer = request.remote or "unknown"
     logger.info("WS client connected: %s (%d total)", peer, len(_ws_clients))
+    _notify_send(
+        "Massalarme – phone connected",
+        peer,
+        urgency="low",
+        timeout_ms=4000,
+        replace_id=1,
+    )
 
     try:
         await ws.send_json({"type": "alarms", "data": _current_alarms})
@@ -674,6 +727,10 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
                         _current_alarms.update(new_alarms)
                         logger.info("Alarms updated via WS from %s", peer)
                         await broadcast_alarms(_current_alarms)
+                    elif msg_type == "alarm_dismissed":
+                        logger.info("Alarm dismissed via passphrase (from %s)", peer)
+                        if _alarm_dismissed is not None:
+                            _alarm_dismissed.set()
                     else:
                         logger.debug("WS unknown msg type from %s: %s", peer, msg_type)
                 except (json.JSONDecodeError, Exception) as exc:
@@ -683,6 +740,13 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
     finally:
         _ws_clients.discard(ws)
         logger.info("WS client disconnected: %s (%d remain)", peer, len(_ws_clients))
+        if not _ws_clients:
+            _notify_send(
+                "Massalarme – phone disconnected",
+                f"WebSocket lost ({peer}). Waiting for reconnection...",
+                timeout_ms=10000,
+                replace_id=1,
+            )
 
     return ws
 
@@ -702,8 +766,18 @@ async def broadcast_alarms(alarms_config: Dict) -> None:
         logger.info("Broadcast alarms to %d client(s)", len(_ws_clients))
 
 
+async def _broadcast_weight(weight_kg: float) -> None:
+    payload = json.dumps({"type": "weight_update", "weight_kg": weight_kg})
+    for ws in set(_ws_clients):
+        try:
+            await ws.send_str(payload)
+        except (ConnectionResetError, ConnectionError, Exception):
+            pass
+    logger.debug("Broadcast weight %.1fkg to WS clients", weight_kg)
+
+
 async def _start_pc_server(cfg: dict) -> None:
-    pc_port = cfg.get("pc_port", 8081)
+    pc_port = cfg.get("pc_port", 8888)
     app = web.Application()
     app.router.add_get("/alarms", _handle_alarms)
     app.router.add_get("/ws", _handle_ws)
@@ -799,12 +873,13 @@ async def main_loop() -> None:
             )
             trigger_alarm(phone_ip, cfg)
 
-            success = await wait_for_weight(cfg, alarm_name)
-            if success:
+            weight_kg = await wait_for_weight(cfg, alarm_name)
+            if weight_kg is not None:
                 stop_alarm(phone_ip, cfg)
+                await _broadcast_weight(weight_kg)
             else:
-                logger.warning(
-                    "No weight detected – alarm may continue (manual stop needed)."
+                logger.info(
+                    "Scale listener ended without weight (passphrase or timeout)."
                 )
 
             cached_next_alarm = None

@@ -30,6 +30,9 @@ class AlarmDismissActivity : AppCompatActivity() {
 
     private val alarmStoppedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            startActivity(Intent(this@AlarmDismissActivity, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            })
             finish()
         }
     }
@@ -61,6 +64,9 @@ class AlarmDismissActivity : AppCompatActivity() {
                 val current = s?.toString() ?: return
                 if (current == PASSPHRASE) {
                     AlarmService.instance?.stopAlarm()
+                    startActivity(Intent(this@AlarmDismissActivity, MainActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    })
                     finish()
                     return
                 }

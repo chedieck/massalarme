@@ -33,6 +33,8 @@ class AlarmService : Service() {
         private const val TAG = "AlarmService"
         private const val NOTIFICATION_SERVICE_ID = 1
         private const val NOTIFICATION_ALARM_ID = 2
+        private const val NOTIFICATION_WS_ID = 3
+        private const val NOTIFICATION_WEIGHT_ID = 4
         const val PREFS_NAME = "massalarme_prefs"
         const val KEY_SECRET = "shared_secret"
         const val KEY_ALARMS = "alarms_json"
@@ -41,7 +43,8 @@ class AlarmService : Service() {
         const val KEY_PC_PORT = "pc_port"
         const val ACTION_ALARM_STOPPED = "org.example.lanalarm.ALARM_STOPPED"
         private const val DEFAULT_PC_PORT = 8888
-        private const val WS_RECONNECT_MS = 60_000L
+        private const val WS_RECONNECT_MS = 15_000L
+        private const val WS_PING_INTERVAL_MS = 30_000L
 
         @Volatile
         var instance: AlarmService? = null
@@ -65,6 +68,36 @@ class AlarmService : Service() {
         .readTimeout(0, TimeUnit.SECONDS)
         .build()
     private var wsReconnectScheduled = false
+
+    private val wsPingRunnable = object : Runnable {
+        override fun run() {
+            val ws = wsClient
+            if (ws != null && wsConnected) {
+                try {
+                    // OkHttp uses pong frames internally; sending empty string tests the pipe
+                    val ok = ws.send("")
+                    if (!ok) {
+                        Log.w(TAG, "WS: ping send failed, forcing reconnect")
+                        wsConnected = false
+                        notifyWsStatus(false)
+                        ws.cancel()
+                        wsClient = null
+                        scheduleReconnect()
+                        return
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "WS: ping exception: ${e.message}, forcing reconnect")
+                    wsConnected = false
+                    notifyWsStatus(false)
+                    ws.cancel()
+                    wsClient = null
+                    scheduleReconnect()
+                    return
+                }
+            }
+            mainHandler.postDelayed(this, WS_PING_INTERVAL_MS)
+        }
+    }
 
     private val volumeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -111,6 +144,9 @@ class AlarmService : Service() {
                 Log.i(TAG, "WS: connected")
                 wsConnected = true
                 wsReconnectScheduled = false
+                notifyWsStatus(true)
+                mainHandler.removeCallbacks(wsPingRunnable)
+                mainHandler.postDelayed(wsPingRunnable, WS_PING_INTERVAL_MS)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -120,6 +156,8 @@ class AlarmService : Service() {
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 Log.i(TAG, "WS: server closing ($code: $reason)")
                 wsConnected = false
+                mainHandler.removeCallbacks(wsPingRunnable)
+                notifyWsStatus(false)
                 webSocket.close(1000, null)
                 scheduleReconnect()
             }
@@ -127,6 +165,8 @@ class AlarmService : Service() {
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "WS: connection failed: ${t.message}")
                 wsConnected = false
+                mainHandler.removeCallbacks(wsPingRunnable)
+                notifyWsStatus(false)
                 scheduleReconnect()
             }
         })
@@ -145,11 +185,30 @@ class AlarmService : Service() {
                         .apply()
                     Log.i(TAG, "WS: alarms updated from PC")
                 }
+                "weight_update" -> {
+                    val weightKg = json.optDouble("weight_kg", -1.0)
+                    if (weightKg > 0) {
+                        Log.i(TAG, "WS: weight update: %.1f kg".format(weightKg))
+                        showWeightNotification(weightKg)
+                    }
+                }
                 else -> Log.d(TAG, "WS: unknown message type: ${json.optString("type")}")
             }
         } catch (e: Exception) {
             Log.w(TAG, "WS: failed to parse message: ${e.message}")
         }
+    }
+
+    private fun showWeightNotification(weightKg: Double) {
+        val nm = getSystemService(NotificationManager::class.java)
+        val notification = NotificationCompat.Builder(this, App.CHANNEL_SERVICE)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle("Good morning!")
+            .setContentText("%.1f kg".format(weightKg))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .build()
+        nm.notify(NOTIFICATION_WEIGHT_ID, notification)
     }
 
     private fun scheduleReconnect() {
@@ -167,8 +226,32 @@ class AlarmService : Service() {
         wsClient?.cancel()
         wsClient = null
         mainHandler.removeCallbacks(wsReconnectRunnable)
+        mainHandler.removeCallbacks(wsPingRunnable)
         wsReconnectScheduled = false
         connectWebSocket()
+    }
+
+    private fun notifyWsStatus(connected: Boolean) {
+        val nm = getSystemService(NotificationManager::class.java)
+        if (connected) {
+            val notification = NotificationCompat.Builder(this, App.CHANNEL_SERVICE)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                .setContentTitle("Massalarme")
+                .setContentText("Connected to PC")
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(NOTIFICATION_WS_ID, notification)
+        } else {
+            val notification = NotificationCompat.Builder(this, App.CHANNEL_SERVICE)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                .setContentTitle("Massalarme")
+                .setContentText("Disconnected from PC — retrying...")
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setOngoing(true)
+                .build()
+            nm.notify(NOTIFICATION_WS_ID, notification)
+        }
     }
 
     // ─── HTTP server (for PC → phone commands) ──────────────────────
@@ -413,6 +496,8 @@ class AlarmService : Service() {
 
         dismissAlarmNotification()
 
+        sendWsMessage(JSONObject().apply { put("type", "alarm_dismissed") }.toString())
+
         sendBroadcast(Intent(ACTION_ALARM_STOPPED).setPackage(packageName))
 
         Log.i(TAG, "Alarm stopped cleanly")
@@ -448,6 +533,10 @@ class AlarmService : Service() {
     override fun onDestroy() {
         instance = null
         wsConnected = false
+        mainHandler.removeCallbacks(wsPingRunnable)
+        mainHandler.removeCallbacks(wsReconnectRunnable)
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.cancel(NOTIFICATION_WS_ID)
         wsClient?.cancel()
         wsClient = null
         httpServer?.stop()
