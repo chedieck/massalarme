@@ -18,6 +18,12 @@ import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import fi.iki.elonen.NanoHTTPD
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -33,6 +39,8 @@ class AlarmService : Service() {
         const val KEY_LAST_SYNC = "last_sync"
         const val KEY_PC_IP = "pc_ip"
         const val KEY_PC_PORT = "pc_port"
+        private const val DEFAULT_PC_PORT = 8081
+        private const val WS_RECONNECT_MS = 60_000L
 
         @Volatile
         var instance: AlarmService? = null
@@ -46,6 +54,12 @@ class AlarmService : Service() {
     private var savedVolume: Int = -1
     private var audioFocusRequest: AudioFocusRequest? = null
     private var volumeGuardRunning = false
+
+    private var wsClient: WebSocket? = null
+    private val okHttp = OkHttpClient.Builder()
+        .readTimeout(0, TimeUnit.SECONDS)
+        .build()
+    private var wsReconnectScheduled = false
 
     private val volumeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -65,7 +79,89 @@ class AlarmService : Service() {
         httpServer = AlarmHttpServer(8080)
         httpServer?.start()
         Log.i(TAG, "HTTP server started on port 8080")
+
+        connectWebSocket()
     }
+
+    // ─── WebSocket client ────────────────────────────────────────────
+
+    private fun connectWebSocket() {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val pcIp = prefs.getString(KEY_PC_IP, null)
+        val secret = prefs.getString(KEY_SECRET, null)
+
+        if (pcIp.isNullOrBlank() || secret.isNullOrBlank()) {
+            Log.d(TAG, "WS: no PC IP or secret yet, will retry in ${WS_RECONNECT_MS / 1000}s")
+            scheduleReconnect()
+            return
+        }
+
+        val pcPort = prefs.getInt(KEY_PC_PORT, DEFAULT_PC_PORT)
+        val url = "ws://$pcIp:$pcPort/ws?key=$secret"
+        Log.i(TAG, "WS: connecting to $url")
+
+        val request = Request.Builder().url(url).build()
+        wsClient = okHttp.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                Log.i(TAG, "WS: connected")
+                wsReconnectScheduled = false
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                handleWsMessage(text)
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                Log.i(TAG, "WS: server closing ($code: $reason)")
+                webSocket.close(1000, null)
+                scheduleReconnect()
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.w(TAG, "WS: connection failed: ${t.message}")
+                scheduleReconnect()
+            }
+        })
+    }
+
+    private fun handleWsMessage(text: String) {
+        try {
+            val json = JSONObject(text)
+            when (json.optString("type")) {
+                "alarms" -> {
+                    val data = json.optJSONObject("data")?.toString() ?: return
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                        .edit()
+                        .putString(KEY_ALARMS, data)
+                        .putLong(KEY_LAST_SYNC, System.currentTimeMillis())
+                        .apply()
+                    Log.i(TAG, "WS: alarms updated from PC")
+                }
+                else -> Log.d(TAG, "WS: unknown message type: ${json.optString("type")}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "WS: failed to parse message: ${e.message}")
+        }
+    }
+
+    private fun scheduleReconnect() {
+        if (wsReconnectScheduled) return
+        wsReconnectScheduled = true
+        mainHandler.postDelayed({
+            wsReconnectScheduled = false
+            connectWebSocket()
+        }, WS_RECONNECT_MS)
+    }
+
+    fun reconnectWebSocketNow() {
+        wsClient?.cancel()
+        wsClient = null
+        mainHandler.removeCallbacksAndMessages(null)
+        wsReconnectScheduled = false
+        connectWebSocket()
+    }
+
+    // ─── HTTP server (for PC → phone commands) ──────────────────────
 
     private fun buildServiceNotification(): Notification {
         return NotificationCompat.Builder(this, App.CHANNEL_SERVICE)
@@ -88,11 +184,11 @@ class AlarmService : Service() {
     }
 
     private inner class AlarmHttpServer(port: Int) : NanoHTTPD(port) {
-        override fun serve(session: IHTTPSession): Response {
+        override fun serve(session: IHTTPSession): NanoHTTPD.Response {
             val storedSecret = getStoredSecret()
             if (storedSecret.isNullOrEmpty()) {
                 return newFixedLengthResponse(
-                    Response.Status.SERVICE_UNAVAILABLE,
+                    NanoHTTPD.Response.Status.SERVICE_UNAVAILABLE,
                     MIME_PLAINTEXT,
                     "Secret not configured"
                 )
@@ -100,20 +196,21 @@ class AlarmService : Service() {
 
             if (!validateKey(session)) {
                 return newFixedLengthResponse(
-                    Response.Status.FORBIDDEN,
+                    NanoHTTPD.Response.Status.FORBIDDEN,
                     MIME_PLAINTEXT,
                     "Invalid key"
                 )
             }
 
-            // Store the PC's IP so the phone can fetch alarms later
             val pcIp = session.remoteIpAddress?.removePrefix("/")
             if (!pcIp.isNullOrBlank()) {
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                    .edit()
-                    .putString(KEY_PC_IP, pcIp)
-                    .apply()
-                Log.d(TAG, "Stored PC IP: $pcIp")
+                val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                val oldIp = prefs.getString(KEY_PC_IP, null)
+                prefs.edit().putString(KEY_PC_IP, pcIp).apply()
+                if (oldIp != pcIp) {
+                    Log.i(TAG, "PC IP updated: $oldIp -> $pcIp, reconnecting WS")
+                    reconnectWebSocketNow()
+                }
             }
 
             return when (session.uri) {
@@ -139,20 +236,22 @@ class AlarmService : Service() {
                     } catch (e: Exception) {
                         Log.w(TAG, "Alarm sync failed: ${e.message}")
                         newFixedLengthResponse(
-                            Response.Status.INTERNAL_ERROR,
+                            NanoHTTPD.Response.Status.INTERNAL_ERROR,
                             MIME_PLAINTEXT,
                             "Failed to sync alarms"
                         )
                     }
                 }
                 else -> newFixedLengthResponse(
-                    Response.Status.NOT_FOUND,
+                    NanoHTTPD.Response.Status.NOT_FOUND,
                     MIME_PLAINTEXT,
                     "Not found"
                 )
             }
         }
     }
+
+    // ─── Alarm control ───────────────────────────────────────────────
 
     private fun runOnMainAndWait(action: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -332,6 +431,8 @@ class AlarmService : Service() {
 
     override fun onDestroy() {
         instance = null
+        wsClient?.cancel()
+        wsClient = null
         httpServer?.stop()
         stopAlarm()
         super.onDestroy()

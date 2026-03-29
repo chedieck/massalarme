@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import json
+import weakref
 
 import requests
 import yaml
@@ -582,16 +583,16 @@ async def wait_for_weight(cfg: dict, alarm_name: str) -> bool:
 
 
 # =====================================================================
-# PC HTTP server (serves alarms to phone)
+# PC WebSocket + HTTP server
 # =====================================================================
 
-# Global ref updated by main loop so the HTTP handler always has fresh data.
 _current_alarms: Dict = {}
 _current_cfg: dict = {}
+_ws_clients: weakref.WeakSet[web.WebSocketResponse] = weakref.WeakSet()
 
 
 async def _handle_alarms(request: web.Request) -> web.Response:
-    """GET /alarms?key=<secret> → return alarms config as JSON."""
+    """GET /alarms?key=<secret> — HTTP fallback for alarm data."""
     secret = _current_cfg.get("shared_secret", "")
     key = request.query.get("key", "")
     if not secret or key != secret:
@@ -599,17 +600,60 @@ async def _handle_alarms(request: web.Request) -> web.Response:
     return web.json_response(_current_alarms)
 
 
+async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
+    """WebSocket endpoint. Auth via ?key= on connect, then push alarms."""
+    secret = _current_cfg.get("shared_secret", "")
+    key = request.query.get("key", "")
+    if not secret or key != secret:
+        return web.Response(status=403, text="Invalid key")
+
+    ws = web.WebSocketResponse(heartbeat=30)
+    await ws.prepare(request)
+    _ws_clients.add(ws)
+    peer = request.remote or "unknown"
+    logger.info("WS client connected: %s (%d total)", peer, len(_ws_clients))
+
+    try:
+        await ws.send_json({"type": "alarms", "data": _current_alarms})
+
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                logger.debug("WS recv from %s: %s", peer, msg.data[:200])
+            elif msg.type in (web.WSMsgType.ERROR, web.WSMsgType.CLOSE):
+                break
+    finally:
+        _ws_clients.discard(ws)
+        logger.info("WS client disconnected: %s (%d remain)", peer, len(_ws_clients))
+
+    return ws
+
+
+async def broadcast_alarms(alarms_config: Dict) -> None:
+    """Push updated alarms to all connected WebSocket clients."""
+    payload = json.dumps({"type": "alarms", "data": alarms_config})
+    stale: list[web.WebSocketResponse] = []
+    for ws in set(_ws_clients):
+        try:
+            await ws.send_str(payload)
+        except (ConnectionResetError, ConnectionError, Exception):
+            stale.append(ws)
+    for ws in stale:
+        _ws_clients.discard(ws)
+    if _ws_clients:
+        logger.info("Broadcast alarms to %d client(s)", len(_ws_clients))
+
+
 async def _start_pc_server(cfg: dict) -> None:
-    """Start a lightweight HTTP server on pc_port to serve alarm data."""
     pc_port = cfg.get("pc_port", 8081)
     app = web.Application()
     app.router.add_get("/alarms", _handle_alarms)
+    app.router.add_get("/ws", _handle_ws)
 
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", pc_port)
     await site.start()
-    logger.info("PC HTTP server listening on 0.0.0.0:%d", pc_port)
+    logger.info("PC server listening on 0.0.0.0:%d (HTTP + WS)", pc_port)
 
 
 # =====================================================================
@@ -649,6 +693,7 @@ async def main_loop() -> None:
                 _current_alarms = alarms_config
                 last_mtime = new_mtime
                 cached_next_alarm = None
+                await broadcast_alarms(alarms_config)
                 sync_alarms_to_phone(phone_ip, cfg, alarms_config)
 
             # Get next alarm
@@ -673,6 +718,7 @@ async def main_loop() -> None:
             # --- Prep time reached ---
             logger.info("Prep time for '%s' – running now.", alarm_name)
             phone_ip = await discover_phone_ip(cfg)
+            await broadcast_alarms(alarms_config)
             sync_alarms_to_phone(phone_ip, cfg, alarms_config)
 
             now = datetime.now()
