@@ -1,0 +1,27 @@
+# Balanca – Scale Alarm Manager
+# Example configuration. Copy to ~/.config/balanca/config.yaml
+
+# Phone Bluetooth MAC address (used for LAN discovery via ARP)
+phone_mac: ""
+
+# Local network CIDR (for ARP scanning)
+lan_network: "192.168.1.0/24"
+
+# HTTP port on the Android app
+port: 8080
+
+# Xiaomi scale BLE advertisement name
+scale_name: "MIBFS"
+
+# BLE service UUID prefix for body composition
+scale_uuid_prefix: "0000181b"
+
+# BLE flag byte indicating a stable (synced) weight reading
+syncing_weight_flag: 0x26
+
+# Minimum weight (kg) to accept as a valid reading
+min_weight_kg: 68
+
+# Shared secret for authenticating requests to the phone.
+# Auto-generated on first run. Scan the QR code with the phone app.
+shared_secret: ""

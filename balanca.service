@@ -1,0 +1,14 @@
+[Unit]
+Description=Balança – Scale Alarm Manager
+After=bluetooth.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env python3 %h/codes/balança/alarm_manager.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
