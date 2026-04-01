@@ -608,7 +608,6 @@ async def wait_for_weight(cfg: dict, alarm_name: str) -> Optional[float]:
     or until the alarm is dismissed via passphrase. Returns weight_kg on
     scale success, None on passphrase dismiss or timeout."""
     global _alarm_dismissed
-    _alarm_dismissed = asyncio.Event()
 
     weight_received = asyncio.Event()
     detected_weight: List[float] = []
@@ -643,6 +642,9 @@ async def wait_for_weight(cfg: dict, alarm_name: str) -> Optional[float]:
     scanner = BleakScanner(detection_callback=on_advertisement)
     await scanner.start()
     try:
+        # Fresh event AFTER scanner start — discards stale WS dismiss from startAlarm() cleanup
+        _alarm_dismissed = asyncio.Event()
+
         done, _ = await asyncio.wait(
             [
                 asyncio.create_task(weight_received.wait()),

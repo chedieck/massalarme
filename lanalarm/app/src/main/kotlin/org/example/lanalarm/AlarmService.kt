@@ -365,7 +365,7 @@ class AlarmService : Service() {
     private fun startAlarm() {
         try {
             Log.i(TAG, "startAlarm() called — stopping any previous alarm first")
-            stopAlarm()
+            stopAlarm(sendDismiss = false)
 
             val am = audioManager
             if (am == null) {
@@ -465,8 +465,8 @@ class AlarmService : Service() {
         nm.cancel(NOTIFICATION_ALARM_ID)
     }
 
-    fun stopAlarm() {
-        Log.i(TAG, "stopAlarm() called (mediaPlayer=${mediaPlayer != null})")
+    fun stopAlarm(sendDismiss: Boolean = true) {
+        Log.i(TAG, "stopAlarm() called (mediaPlayer=${mediaPlayer != null}, sendDismiss=$sendDismiss)")
         volumeGuardRunning = false
 
         try {
@@ -496,7 +496,9 @@ class AlarmService : Service() {
 
         dismissAlarmNotification()
 
-        sendWsMessage(JSONObject().apply { put("type", "alarm_dismissed") }.toString())
+        if (sendDismiss) {
+            sendWsMessage(JSONObject().apply { put("type", "alarm_dismissed") }.toString())
+        }
 
         sendBroadcast(Intent(ACTION_ALARM_STOPPED).setPackage(packageName))
 
