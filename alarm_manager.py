@@ -673,6 +673,8 @@ _current_alarms: Dict = {}
 _current_cfg: dict = {}
 _ws_clients: weakref.WeakSet[web.WebSocketResponse] = weakref.WeakSet()
 _alarm_dismissed: Optional[asyncio.Event] = None
+_alarm_active: bool = False  # True while an alarm cycle is in progress
+_phone_ip: Optional[str] = None  # Last-known phone IP for failsafe handler
 
 
 async def _handle_alarms(request: web.Request) -> web.Response:
@@ -682,6 +684,40 @@ async def _handle_alarms(request: web.Request) -> web.Response:
     if not secret or key != secret:
         return web.Response(status=403, text="Invalid key")
     return web.json_response(_current_alarms)
+
+
+async def _handle_stop_alarm(request: web.Request) -> web.Response:
+    """GET /stop-alarm?key=<secret> — failsafe: stop the alarm from the PC."""
+    secret = _current_cfg.get("shared_secret", "")
+    key = request.query.get("key", "")
+    if not secret or key != secret:
+        return web.Response(status=403, text="Invalid key")
+
+    global _alarm_active, _alarm_dismissed
+
+    if not _alarm_active:
+        return web.Response(text="No alarm is currently active")
+
+    logger.info("FAILSAFE STOP triggered from PC")
+
+    if _alarm_dismissed is not None:
+        _alarm_dismissed.set()
+
+    phone_ip = _phone_ip
+    if phone_ip:
+        try:
+            stop_alarm(phone_ip, _current_cfg)
+        except Exception as exc:
+            logger.error("Failsafe stop_alarm to phone failed: %s", exc)
+
+    _alarm_active = False
+    _notify_send(
+        "Massalarme – alarm stopped",
+        "Failsafe stop from PC",
+        urgency="normal",
+        timeout_ms=5000,
+    )
+    return web.Response(text="Alarm stopped via failsafe")
 
 
 async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
@@ -785,6 +821,7 @@ async def _start_pc_server(cfg: dict) -> None:
     pc_port = cfg.get("pc_port", 8888)
     app = web.Application()
     app.router.add_get("/alarms", _handle_alarms)
+    app.router.add_get("/stop-alarm", _handle_stop_alarm)
     app.router.add_get("/ws", _handle_ws)
 
     runner = web.AppRunner(app, access_log=None)
@@ -800,7 +837,7 @@ async def _start_pc_server(cfg: dict) -> None:
 
 
 async def main_loop() -> None:
-    global _current_alarms, _current_cfg
+    global _current_alarms, _current_cfg, _alarm_active, _phone_ip
 
     cfg = load_config()
     _current_cfg = cfg
@@ -815,6 +852,7 @@ async def main_loop() -> None:
     await _start_pc_server(cfg)
 
     phone_ip = await discover_phone_ip(cfg)
+    _phone_ip = phone_ip
     logger.info("Using phone IP: %s", phone_ip)
     sync_alarms_to_phone(phone_ip, cfg, alarms_config)
 
@@ -856,6 +894,7 @@ async def main_loop() -> None:
             # --- Prep time reached ---
             logger.info("Prep time for '%s' – running now.", alarm_name)
             phone_ip = await discover_phone_ip(cfg)
+            _phone_ip = phone_ip
             await broadcast_alarms(alarms_config)
             sync_alarms_to_phone(phone_ip, cfg, alarms_config)
 
@@ -871,21 +910,33 @@ async def main_loop() -> None:
             else:
                 logger.info("Alarm time already passed – triggering immediately.")
 
+            if _alarm_active:
+                logger.warning(
+                    "Alarm already active – skipping trigger for '%s'", alarm_name
+                )
+                cached_next_alarm = None
+                await asyncio.sleep(1)
+                continue
+
             logger.info(
                 "TRIGGERING ALARM: %s @ %s",
                 alarm_name,
                 datetime.now().strftime("%H:%M:%S"),
             )
-            trigger_alarm(phone_ip, cfg)
+            _alarm_active = True
+            try:
+                trigger_alarm(phone_ip, cfg)
 
-            weight_kg = await wait_for_weight(cfg, alarm_name)
-            if weight_kg is not None:
-                stop_alarm(phone_ip, cfg)
-                await _broadcast_weight(weight_kg)
-            else:
-                logger.info(
-                    "Scale listener ended without weight (passphrase or timeout)."
-                )
+                weight_kg = await wait_for_weight(cfg, alarm_name)
+                if weight_kg is not None:
+                    stop_alarm(phone_ip, cfg)
+                    await _broadcast_weight(weight_kg)
+                else:
+                    logger.info(
+                        "Scale listener ended without weight (passphrase or timeout)."
+                    )
+            finally:
+                _alarm_active = False
 
             cached_next_alarm = None
             await asyncio.sleep(1)

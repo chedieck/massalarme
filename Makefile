@@ -11,7 +11,7 @@ SYSTEMD_DIR := $(HOME)/.config/systemd/user
 ANDROID_DIR := $(SCRIPT_DIR)lanalarm
 
 .PHONY: install venv sync run secret start stop restart reload status logs enable disable \
-        apk apk-install clean uninstall
+        apk apk-install clean uninstall stop-alarm
 
 # ── Setup ──────────────────────────────────────────────────────────────
 
@@ -81,6 +81,13 @@ run: sync
 
 secret: sync
 	$(UV) run --python $(PYTHON) alarm_manager.py --show-secret
+
+stop-alarm:
+	@SECRET=$$(grep '^shared_secret:' "$(CONFIG_DIR)/config.yaml" | awk '{print $$2}'); \
+	PORT=$$(grep '^pc_port:' "$(CONFIG_DIR)/config.yaml" | awk '{print $$2}'); \
+	PORT=$${PORT:-8888}; \
+	if [ -z "$$SECRET" ]; then echo "Error: shared_secret not found in config.yaml"; exit 1; fi; \
+	curl -sf "http://localhost:$${PORT}/stop-alarm?key=$${SECRET}" && echo || echo "Failed to reach daemon"
 
 # ── Android ────────────────────────────────────────────────────────────
 
