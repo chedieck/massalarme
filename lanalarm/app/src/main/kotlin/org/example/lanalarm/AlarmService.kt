@@ -23,6 +23,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -177,13 +178,28 @@ class AlarmService : Service() {
             val json = JSONObject(text)
             when (json.optString("type")) {
                 "alarms" -> {
-                    val data = json.optJSONObject("data")?.toString() ?: return
-                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                        .edit()
-                        .putString(KEY_ALARMS, data)
+                    val remoteAlarms = json.optJSONObject("data") ?: return
+                    val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    val localAlarms = prefs.getString(KEY_ALARMS, null)
+                        ?.let { runCatching { JSONObject(it) }.getOrNull() }
+                        ?: JSONObject().apply {
+                            put("version", 2)
+                            put("alarms", JSONArray())
+                        }
+                    val mergedAlarms = mergeAlarms(localAlarms, remoteAlarms)
+
+                    prefs.edit()
+                        .putString(KEY_ALARMS, mergedAlarms.toString())
                         .putLong(KEY_LAST_SYNC, System.currentTimeMillis())
                         .apply()
-                    Log.i(TAG, "WS: alarms updated from PC")
+
+                    sendWsMessage(
+                        JSONObject().apply {
+                            put("type", "update_alarms")
+                            put("data", mergedAlarms)
+                        }.toString()
+                    )
+                    Log.i(TAG, "WS: alarms merged with PC")
                 }
                 "weight_update" -> {
                     val weightKg = json.optDouble("weight_kg", -1.0)
@@ -196,6 +212,46 @@ class AlarmService : Service() {
             }
         } catch (e: Exception) {
             Log.w(TAG, "WS: failed to parse message: ${e.message}")
+        }
+    }
+
+    private fun mergeAlarms(local: JSONObject, remote: JSONObject): JSONObject {
+        val mergedById = linkedMapOf<String, JSONObject>()
+
+        fun copyAlarm(alarm: JSONObject): JSONObject = JSONObject(alarm.toString())
+
+        fun mergeFrom(source: JSONObject, replaceIfNewer: Boolean) {
+            val alarms = source.optJSONArray("alarms") ?: JSONArray()
+            for (i in 0 until alarms.length()) {
+                val alarm = alarms.optJSONObject(i) ?: continue
+                val id = alarm.optString("id")
+                if (id.isBlank()) continue
+
+                val candidate = copyAlarm(alarm)
+                val existing = mergedById[id]
+                if (existing == null) {
+                    mergedById[id] = candidate
+                    continue
+                }
+
+                if (replaceIfNewer) {
+                    val existingUpdatedAt = existing.optLong("updated_at", Long.MIN_VALUE)
+                    val candidateUpdatedAt = candidate.optLong("updated_at", Long.MIN_VALUE)
+                    if (candidateUpdatedAt > existingUpdatedAt) {
+                        mergedById[id] = candidate
+                    }
+                }
+            }
+        }
+
+        mergeFrom(local, replaceIfNewer = false)
+        mergeFrom(remote, replaceIfNewer = true)
+
+        return JSONObject().apply {
+            put("version", 2)
+            put("alarms", JSONArray().apply {
+                mergedById.values.forEach { put(it) }
+            })
         }
     }
 
@@ -308,21 +364,45 @@ class AlarmService : Service() {
 
             return when (session.uri) {
                 "/alarm" -> {
+                    val alreadyPlaying = mediaPlayer != null
                     runOnMainAndWait { startAlarm() }
-                    newFixedLengthResponse("Alarm triggered!")
+                    if (alreadyPlaying) {
+                        newFixedLengthResponse("Already playing")
+                    } else {
+                        newFixedLengthResponse("Alarm triggered!")
+                    }
                 }
                 "/stop" -> {
                     runOnMainAndWait { stopAlarm() }
                     newFixedLengthResponse("Alarm stopped")
+                }
+                "/status" -> {
+                    val json = JSONObject().apply {
+                        put("alarm_active", mediaPlayer != null)
+                    }
+                    newFixedLengthResponse(
+                        NanoHTTPD.Response.Status.OK,
+                        "application/json",
+                        json.toString()
+                    )
                 }
                 "/sync-alarms" -> {
                     val files = HashMap<String, String>()
                     try {
                         session.parseBody(files)
                         val body = files["postData"] ?: ""
-                        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                            .edit()
-                            .putString(KEY_ALARMS, body)
+                        val remoteAlarms = JSONObject(body)
+                        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                        val localAlarms = prefs.getString(KEY_ALARMS, null)
+                            ?.let { runCatching { JSONObject(it) }.getOrNull() }
+                            ?: JSONObject().apply {
+                                put("version", 2)
+                                put("alarms", JSONArray())
+                            }
+                        val mergedAlarms = mergeAlarms(localAlarms, remoteAlarms)
+
+                        prefs.edit()
+                            .putString(KEY_ALARMS, mergedAlarms.toString())
                             .putLong(KEY_LAST_SYNC, System.currentTimeMillis())
                             .apply()
                         newFixedLengthResponse("Alarms synced")
@@ -364,6 +444,13 @@ class AlarmService : Service() {
 
     private fun startAlarm() {
         try {
+            // Idempotency: if alarm is already playing, do NOT restart.
+            // Restarting would kill AlarmDismissActivity and wipe password input.
+            if (mediaPlayer != null) {
+                Log.i(TAG, "startAlarm() called but alarm already playing — ignoring")
+                return
+            }
+
             Log.i(TAG, "startAlarm() called — stopping any previous alarm first")
             stopAlarm(sendDismiss = false)
 

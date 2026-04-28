@@ -1,23 +1,21 @@
 {
-  "monday": [
-    {"name": "Wake up", "time": "07:30"}
-  ],
-  "tuesday": [
-    {"name": "Wake up", "time": "07:30"}
-  ],
-  "wednesday": [
-    {"name": "Wake up", "time": "07:30"}
-  ],
-  "thursday": [
-    {"name": "Wake up", "time": "07:30"}
-  ],
-  "friday": [
-    {"name": "Wake up", "time": "07:30"}
-  ],
-  "saturday": [
-    {"name": "Wake up", "time": "08:00"}
-  ],
-  "sunday": [
-    {"name": "Wake up", "time": "08:00"}
+  "version": 2,
+  "alarms": [
+    {
+      "id": "a1b2c3d4",
+      "name": "Wake up",
+      "time": "07:30",
+      "days": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+      "enabled": true,
+      "updated_at": 0
+    },
+    {
+      "id": "e5f6g7h8",
+      "name": "Weekend",
+      "time": "08:00",
+      "days": ["saturday", "sunday"],
+      "enabled": true,
+      "updated_at": 0
+    }
   ]
 }

@@ -32,8 +32,11 @@ min_weight_kg: 68
 # Alarm trigger retry: first 3 attempts at this interval (seconds)
 retry_fast_interval: 10
 
-# Alarm trigger retry: after the first 3, retry every this many seconds (forever)
+# Alarm trigger retry: after the first 3, retry every this many seconds
 retry_interval: 120
+
+# Alarm trigger retry: give up after this many failed attempts for a single alarm
+max_trigger_attempts: 5
 
 # Shared secret for authenticating requests to the phone.
 # Auto-generated on first run. Scan the QR code with the phone app.

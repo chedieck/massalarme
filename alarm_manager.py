@@ -16,6 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -23,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 import json
 import weakref
 
-import requests
+import aiohttp as aiohttp_client
 import yaml
 from aiohttp import web
 from bleak import BleakScanner
@@ -33,6 +34,7 @@ from bleak import BleakScanner
 # ---------------------------------------------------------------------------
 _XDG_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
 _XDG_DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+_XDG_RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
 
 CONFIG_DIR = _XDG_CONFIG / "massalarme"
 DATA_DIR = _XDG_DATA / "massalarme"
@@ -40,6 +42,7 @@ CONFIG_FILE = CONFIG_DIR / "config.yaml"
 ALARMS_FILE = CONFIG_DIR / "alarms.json"
 _LEGACY_ALARMS_YAML = CONFIG_DIR / "alarms.yaml"
 DB_FILE = DATA_DIR / "weights.db"
+ALARM_STATE_FILE = _XDG_RUNTIME / "massalarme-alarm.json"
 
 LOG_FILE = DATA_DIR / "massalarme.log"
 
@@ -93,6 +96,7 @@ _DEFAULT_CONFIG = {
     "phone_scan_interval": 10,
     "retry_fast_interval": 10,
     "retry_interval": 120,
+    "max_trigger_attempts": 5,
 }
 
 
@@ -102,9 +106,95 @@ _DEFAULT_CONFIG = {
 
 
 def _ensure_dirs() -> None:
-    """Create XDG directories if they don't exist."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Bluetooth power management
+# ---------------------------------------------------------------------------
+
+
+async def ensure_bluetooth_on() -> bool:
+    """Ensure the BT adapter is powered on via bluetoothctl.
+    Returns True if BT is (now) on, False on failure."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bluetoothctl",
+            "show",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if b"Powered: yes" in stdout:
+            return True
+
+        logger.info("Bluetooth is OFF – powering on via bluetoothctl...")
+        proc = await asyncio.create_subprocess_exec(
+            "bluetoothctl",
+            "power",
+            "on",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0:
+            logger.info("Bluetooth powered on successfully.")
+            # Adapter needs a moment to initialise after power-on
+            await asyncio.sleep(2)
+            return True
+
+        logger.error(
+            "Failed to power on Bluetooth (exit %d): %s",
+            proc.returncode,
+            stdout.decode(),
+        )
+        return False
+    except FileNotFoundError:
+        logger.error("bluetoothctl not found – cannot manage Bluetooth power state")
+        return False
+    except Exception as exc:
+        logger.error("Bluetooth power check failed: %s", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Alarm state persistence for the active alarm
+# ---------------------------------------------------------------------------
+
+
+def _write_alarm_state(alarm_name: str, phone_ip: str) -> None:
+    try:
+        ALARM_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ALARM_STATE_FILE.write_text(
+            json.dumps(
+                {
+                    "alarm_name": alarm_name,
+                    "phone_ip": phone_ip,
+                    "timestamp": datetime.now().isoformat(),
+                }
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("Failed to write alarm state: %s", exc)
+
+
+def _read_alarm_state() -> Optional[dict]:
+    try:
+        if ALARM_STATE_FILE.exists():
+            data = json.loads(ALARM_STATE_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else None
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def _clear_alarm_state() -> None:
+    try:
+        ALARM_STATE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _migrate_legacy_files() -> None:
@@ -114,14 +204,14 @@ def _migrate_legacy_files() -> None:
     # Migrate legacy alarms.yaml from project dir to XDG config
     legacy_alarms = script_dir / "alarms.yaml"
     if legacy_alarms.exists() and not _LEGACY_ALARMS_YAML.exists():
-        logger.info("Migrating %s → %s", legacy_alarms, _LEGACY_ALARMS_YAML)
+        logger.info("Migrating %s \u2192 %s", legacy_alarms, _LEGACY_ALARMS_YAML)
         _LEGACY_ALARMS_YAML.write_text(
             legacy_alarms.read_text(encoding="utf-8"), encoding="utf-8"
         )
 
-    # Migrate alarms.yaml → alarms.json
+    # Migrate alarms.yaml \u2192 alarms.json
     if _LEGACY_ALARMS_YAML.exists() and not ALARMS_FILE.exists():
-        logger.info("Converting %s → %s", _LEGACY_ALARMS_YAML, ALARMS_FILE)
+        logger.info("Converting %s \u2192 %s", _LEGACY_ALARMS_YAML, ALARMS_FILE)
         try:
             with open(_LEGACY_ALARMS_YAML, encoding="utf-8") as fh:
                 data = yaml.safe_load(fh) or {}
@@ -130,13 +220,13 @@ def _migrate_legacy_files() -> None:
             )
             logger.info("Migration complete. You can remove %s", _LEGACY_ALARMS_YAML)
         except Exception as exc:
-            logger.error("Failed to migrate alarms YAML → JSON: %s", exc)
+            logger.error("Failed to migrate alarms YAML \u2192 JSON: %s", exc)
 
     legacy_db = script_dir / "weights.db"
     if legacy_db.exists() and not DB_FILE.exists():
         import shutil
 
-        logger.info("Migrating %s → %s", legacy_db, DB_FILE)
+        logger.info("Migrating %s \u2192 %s", legacy_db, DB_FILE)
         shutil.copy2(legacy_db, DB_FILE)
 
 
@@ -197,32 +287,124 @@ def _show_secret_qr(secret: str) -> None:
         )
     except ImportError:
         logger.warning(
-            "qrcode package not installed – cannot display QR code. "
+            "qrcode package not installed \u2013 cannot display QR code. "
             "Install with: pip install qrcode[pil]"
         )
         logger.info("Shared secret (copy manually): %s", secret)
 
 
 # =====================================================================
-# Alarm schedule
+# Alarm schedule (v2 format)
 # =====================================================================
+
+WEEKDAYS = [
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+]
+_WEEKDAY_INDEX = {d: i for i, d in enumerate(WEEKDAYS)}
+
+
+def _gen_alarm_id() -> str:
+    """Generate a short unique alarm ID."""
+    return uuid.uuid4().hex[:8]
+
+
+def _now_ms() -> int:
+    """Current time as epoch milliseconds."""
+    return int(time.time() * 1000)
+
+
+def _migrate_v1_to_v2(v1: Dict) -> Dict:
+    """Convert legacy per-day alarm format to v2 (alarm-centric with days list).
+
+    Alarms with the same name+time across different days are merged into one
+    alarm with a combined ``days`` list.
+    """
+    now_ms = _now_ms()
+    # Group weekly alarms by (name, time) to merge days
+    weekly_key: Dict[Tuple[str, str], Dict] = {}
+    for day in WEEKDAYS:
+        for entry in v1.get(day) or []:
+            t = entry.get("time", "")
+            n = entry.get("name", "")
+            key = (n, t)
+            if key not in weekly_key:
+                weekly_key[key] = {
+                    "id": _gen_alarm_id(),
+                    "name": n,
+                    "time": t,
+                    "days": [],
+                    "enabled": True,
+                    "updated_at": now_ms,
+                }
+            weekly_key[key]["days"].append(day)
+
+    alarms: List[Dict] = list(weekly_key.values())
+
+    # Date alarms
+    for entry in v1.get("date") or []:
+        alarms.append(
+            {
+                "id": _gen_alarm_id(),
+                "name": entry.get("name", ""),
+                "time": entry.get("time", ""),
+                "date": entry.get("date", ""),
+                "enabled": True,
+                "updated_at": now_ms,
+            }
+        )
+
+    # Next (one-shot) alarms
+    for entry in v1.get("next") or []:
+        alarms.append(
+            {
+                "id": _gen_alarm_id(),
+                "name": entry.get("name", ""),
+                "time": entry.get("time", ""),
+                "type": "next",
+                "enabled": True,
+                "updated_at": now_ms,
+            }
+        )
+
+    return {"version": 2, "alarms": alarms}
+
+
+def _save_alarms(alarms_config: Dict) -> None:
+    """Write alarms dict to disk."""
+    ALARMS_FILE.write_text(
+        json.dumps(alarms_config, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def load_alarms() -> Tuple[Dict, float]:
-    """Load alarms.json and return (config, mtime)."""
+    """Load alarms.json, migrating v1→v2 if needed. Returns (config, mtime)."""
     if not ALARMS_FILE.exists():
         logger.warning("Alarms file not found: %s", ALARMS_FILE)
-        return {}, 0.0
+        return {"version": 2, "alarms": []}, 0.0
     try:
         with open(ALARMS_FILE, encoding="utf-8") as fh:
             config = json.load(fh)
         if not isinstance(config, dict):
             config = {}
+
+        # Detect v1 format (no "version" key, has weekday keys at top level)
+        if config.get("version") != 2:
+            logger.info("Migrating alarms.json from v1 → v2 format.")
+            config = _migrate_v1_to_v2(config)
+            _save_alarms(config)
+            logger.info("Migration complete: %d alarm(s).", len(config["alarms"]))
+
         mtime = os.path.getmtime(ALARMS_FILE)
         return config, mtime
     except (json.JSONDecodeError, OSError) as exc:
         logger.error("Failed to load alarms file: %s", exc)
-        return {}, 0.0
+        return {"version": 2, "alarms": []}, 0.0
 
 
 def _parse_time(time_str: str) -> dt_time:
@@ -242,53 +424,79 @@ def _parse_datetime(date_str: str, time_str: str) -> datetime:
     return datetime.combine(d, t)
 
 
+def _alarm_kind(alarm: Dict) -> str:
+    """Return 'weekly', 'date', or 'next' depending on alarm fields."""
+    if alarm.get("date"):
+        return "date"
+    if alarm.get("type") == "next":
+        return "next"
+    return "weekly"
+
+
+def merge_alarms(local: Dict, remote: Dict) -> Dict:
+    """Merge two v2 alarm configs. Per alarm ID, keep the one with the
+    latest ``updated_at``. Alarms only on one side are kept (new alarm
+    created while offline)."""
+    local_by_id = {a["id"]: a for a in local.get("alarms") or []}
+    remote_by_id = {a["id"]: a for a in remote.get("alarms") or []}
+    all_ids = set(local_by_id) | set(remote_by_id)
+
+    merged: List[Dict] = []
+    for aid in all_ids:
+        l = local_by_id.get(aid)
+        r = remote_by_id.get(aid)
+        if l and r:
+            merged.append(l if l.get("updated_at", 0) >= r.get("updated_at", 0) else r)
+        elif l:
+            merged.append(l)
+        else:
+            merged.append(r)  # type: ignore[arg-type]
+
+    return {"version": 2, "alarms": merged}
+
+
 def get_next_alarm_time(alarms_config: Dict) -> Optional[Tuple[datetime, str]]:
     """Return the (datetime, name) of the soonest upcoming alarm, or None."""
     now = datetime.now()
     candidates: List[Tuple[datetime, str]] = []
 
-    # 'next' – one-shot alarms (fires once at next occurrence of HH:MM[:SS])
-    for alarm in alarms_config.get("next") or []:
+    for alarm in alarms_config.get("alarms") or []:
+        if not alarm.get("enabled", True):
+            continue
         try:
             t = _parse_time(alarm["time"])
         except (KeyError, ValueError):
             continue
-        dt = datetime.combine(now.date(), t)
-        if dt <= now:
-            dt += timedelta(days=1)
-        candidates.append((dt, alarm.get("name", "Next Alarm")))
 
-    # 'date' – date-specific alarms
-    for alarm in alarms_config.get("date") or []:
-        try:
-            dt = _parse_datetime(alarm["date"], alarm["time"])
-        except (KeyError, ValueError):
-            continue
-        if dt > now:
-            candidates.append((dt, alarm.get("name", alarm["date"])))
+        kind = _alarm_kind(alarm)
+        name = alarm.get("name", "Alarm")
 
-    # Weekly alarms
-    weekdays = [
-        "monday",
-        "tuesday",
-        "wednesday",
-        "thursday",
-        "friday",
-        "saturday",
-        "sunday",
-    ]
-    for i, day in enumerate(weekdays):
-        for alarm in alarms_config.get(day) or []:
+        if kind == "next":
+            dt = datetime.combine(now.date(), t)
+            if dt <= now:
+                dt += timedelta(days=1)
+            candidates.append((dt, name))
+
+        elif kind == "date":
             try:
-                t = _parse_time(alarm["time"])
+                dt = _parse_datetime(alarm["date"], alarm["time"])
             except (KeyError, ValueError):
                 continue
-            days_ahead = (i - now.weekday()) % 7
-            if days_ahead == 0 and datetime.combine(now.date(), t) <= now:
-                days_ahead = 7
-            target_date = now.date() + timedelta(days=days_ahead)
-            dt = datetime.combine(target_date, t)
-            candidates.append((dt, alarm.get("name", day.title())))
+            if dt > now:
+                candidates.append((dt, name))
+
+        else:  # weekly
+            days = alarm.get("days") or []
+            for day_name in days:
+                i = _WEEKDAY_INDEX.get(day_name)
+                if i is None:
+                    continue
+                days_ahead = (i - now.weekday()) % 7
+                if days_ahead == 0 and datetime.combine(now.date(), t) <= now:
+                    days_ahead = 7
+                target_date = now.date() + timedelta(days=days_ahead)
+                dt = datetime.combine(target_date, t)
+                candidates.append((dt, name))
 
     return min(candidates, key=lambda x: x[0]) if candidates else None
 
@@ -301,53 +509,46 @@ def _iter_upcoming_alarm_datetimes(
     start_date = now.date()
     candidates: List[Tuple[datetime, str]] = []
 
-    # 'next'
-    for alarm in alarms_config.get("next") or []:
+    for alarm in alarms_config.get("alarms") or []:
+        if not alarm.get("enabled", True):
+            continue
         try:
             t = _parse_time(alarm["time"])
-            name = alarm.get("name", "Next Alarm")
         except (KeyError, ValueError):
             continue
-        for d in range(horizon_days + 1):
-            dt = datetime.combine(start_date + timedelta(days=d), t)
-            if dt >= now:
-                candidates.append((dt, name))
-                break
 
-    # 'date'
-    for alarm in alarms_config.get("date") or []:
-        try:
-            dt = _parse_datetime(alarm["date"], alarm["time"])
-        except (KeyError, ValueError):
-            continue
-        if dt >= now:
-            candidates.append((dt, alarm.get("name", alarm["date"])))
+        kind = _alarm_kind(alarm)
+        name = alarm.get("name", "Alarm")
 
-    # Weekly
-    weekdays = [
-        "monday",
-        "tuesday",
-        "wednesday",
-        "thursday",
-        "friday",
-        "saturday",
-        "sunday",
-    ]
-    for i, day in enumerate(weekdays):
-        for alarm in alarms_config.get(day) or []:
-            try:
-                t = _parse_time(alarm["time"])
-                name = alarm.get("name", day.title())
-            except (KeyError, ValueError):
-                continue
+        if kind == "next":
             for d in range(horizon_days + 1):
-                cur = start_date + timedelta(days=d)
-                if cur.weekday() != i:
-                    continue
-                dt = datetime.combine(cur, t)
+                dt = datetime.combine(start_date + timedelta(days=d), t)
                 if dt >= now:
                     candidates.append((dt, name))
                     break
+
+        elif kind == "date":
+            try:
+                dt = _parse_datetime(alarm["date"], alarm["time"])
+            except (KeyError, ValueError):
+                continue
+            if dt >= now:
+                candidates.append((dt, name))
+
+        else:  # weekly
+            days = alarm.get("days") or []
+            for day_name in days:
+                i = _WEEKDAY_INDEX.get(day_name)
+                if i is None:
+                    continue
+                for d in range(horizon_days + 1):
+                    cur = start_date + timedelta(days=d)
+                    if cur.weekday() != i:
+                        continue
+                    dt = datetime.combine(cur, t)
+                    if dt >= now:
+                        candidates.append((dt, name))
+                        break
 
     candidates.sort(key=lambda x: x[0])
     seen: set[Tuple[datetime, str]] = set()
@@ -391,6 +592,35 @@ def log_upcoming_alarms(
             prep_state,
             dt.strftime("%H:%M:%S"),
         )
+
+
+def print_alarms(alarms_config: Dict) -> None:
+    """Print upcoming alarms to stdout in a human-friendly table."""
+    now = datetime.now()
+    items = _iter_upcoming_alarm_datetimes(alarms_config, horizon_days=14)
+
+    if not items:
+        print("No upcoming alarms.")
+        return
+
+    print(f"{'When':<18} {'Name':<20} {'ETA':>14}")
+    print("-" * 54)
+
+    for dt, name in items:
+        delta = int((dt - now).total_seconds())
+        if delta < 0:
+            continue
+        d, rem = divmod(delta, 86400)
+        h, rem = divmod(rem, 3600)
+        m, _ = divmod(rem, 60)
+        if d > 0:
+            eta = f"{d}d {h:02}h {m:02}m"
+        elif h > 0:
+            eta = f"{h}h {m:02}m"
+        else:
+            eta = f"{m}m"
+        when_str = dt.strftime("%a %d/%m %H:%M")
+        print(f"{when_str:<18} {name:<20} {'in ' + eta:>14}")
 
 
 # =====================================================================
@@ -492,7 +722,7 @@ async def discover_phone_ip(cfg: dict) -> str:
                     logger.info("Phone found at: %s", phone_ip)
                     break
         except FileNotFoundError:
-            logger.error("'ip' command not found – cannot discover phone IP.")
+            logger.error("'ip' command not found \u2013 cannot discover phone IP.")
         except subprocess.SubprocessError as exc:
             logger.warning("IP discovery error: %s", exc)
 
@@ -504,10 +734,51 @@ async def discover_phone_ip(cfg: dict) -> str:
     return phone_ip
 
 
+async def discover_phone_ip_until(cfg: dict, deadline: datetime) -> Optional[str]:
+    """Scan ARP table for the phone until *deadline* is reached."""
+    phone_mac = cfg["phone_mac"]
+    lan_network = cfg["lan_network"]
+    interval = cfg.get("phone_scan_interval", 10)
+
+    while True:
+        try:
+            logger.info("Scanning ARP table for phone (MAC: %s)...", phone_mac)
+            subprocess.run(
+                ["ping", "-c", "1", "-b", lan_network.split("/")[0]],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            result = subprocess.check_output(["ip", "neigh"], text=True)
+            for line in result.splitlines():
+                if phone_mac.lower() in line.lower():
+                    phone_ip = line.split()[0]
+                    logger.info("Phone found at: %s", phone_ip)
+                    return phone_ip
+        except FileNotFoundError:
+            logger.error("'ip' command not found – cannot discover phone IP.")
+        except subprocess.SubprocessError as exc:
+            logger.warning("IP discovery error: %s", exc)
+
+        remaining_seconds = (deadline - datetime.now()).total_seconds()
+        if remaining_seconds <= 0:
+            return None
+
+        logger.info(
+            "Phone not found. Retrying in %ds (%.1fs remaining before skip)...",
+            interval,
+            remaining_seconds,
+        )
+        await asyncio.sleep(min(interval, remaining_seconds))
+
+
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _ICON_PATH = _SCRIPT_DIR / "lanalarm" / "icon.png"
 
 _FAST_RETRIES = 3
+_DEFAULT_MAX_TRIGGER_ATTEMPTS = 5
+_ALARM_MISFIRE_GRACE_SECONDS = 5
+_TRIGGER_NOTIFICATION_ID = 1
+_HTTP_TIMEOUT = aiohttp_client.ClientTimeout(total=5)
 
 
 def _notify_send(
@@ -538,63 +809,101 @@ def _build_url(template: str, phone_ip: str, cfg: dict) -> str:
     return f"{base}?key={cfg['shared_secret']}"
 
 
-def trigger_alarm(phone_ip: str, cfg: dict) -> bool:
-    """Try to trigger the alarm on the phone. Retries forever:
-    first 3 attempts at retry_fast_interval, then retry_interval indefinitely."""
+async def trigger_alarm(phone_ip: str, cfg: dict, cancel_event: asyncio.Event) -> bool:
+    """Try to trigger the alarm on the phone (async, cancellable).
+    Returns True on success, False if cancelled before the phone acknowledged."""
     url = _build_url("http://{phone_ip}:{port}/alarm", phone_ip, cfg)
     fast_interval = cfg.get("retry_fast_interval", 10)
     long_interval = cfg.get("retry_interval", 120)
+    max_attempts = max(
+        1, int(cfg.get("max_trigger_attempts", _DEFAULT_MAX_TRIGGER_ATTEMPTS))
+    )
     attempt = 0
 
-    while True:
-        attempt += 1
-        try:
-            resp = requests.get(url, timeout=5)
-            if resp.status_code < 400:
-                logger.info(
-                    "ALARM TRIGGERED -> %d: %s", resp.status_code, resp.text.strip()
-                )
-                return True
-            logger.warning(
-                "Alarm trigger got %d (attempt %d)",
-                resp.status_code,
-                attempt,
-            )
-        except requests.RequestException as exc:
-            logger.warning(
-                "Alarm trigger failed (attempt %d): %s",
-                attempt,
-                exc,
+    async with aiohttp_client.ClientSession(timeout=_HTTP_TIMEOUT) as session:
+        while not cancel_event.is_set() and attempt < max_attempts:
+            attempt += 1
+            try:
+                async with session.get(url) as resp:
+                    body = await resp.text()
+                    if resp.status < 400:
+                        logger.info(
+                            "ALARM TRIGGERED -> %d: %s", resp.status, body.strip()
+                        )
+                        return True
+                    logger.warning(
+                        "Alarm trigger got %d (attempt %d)", resp.status, attempt
+                    )
+            except (aiohttp_client.ClientError, asyncio.TimeoutError, OSError) as exc:
+                logger.warning("Alarm trigger failed (attempt %d): %s", attempt, exc)
+
+            delay = fast_interval if attempt <= _FAST_RETRIES else long_interval
+
+            _notify_send(
+                "Massalarme – trigger failed",
+                f"Attempt {attempt}. Retrying in {delay}s...",
+                urgency="normal",
+                replace_id=_TRIGGER_NOTIFICATION_ID,
             )
 
-        if attempt <= _FAST_RETRIES:
-            delay = fast_interval
-        else:
-            delay = long_interval
+            try:
+                await asyncio.wait_for(cancel_event.wait(), timeout=delay)
+                break
+            except asyncio.TimeoutError:
+                pass
 
-        _notify_send(
-            "Massalarme – trigger failed",
-            f"Attempt {attempt}. Retrying in {delay}s...",
+    if attempt >= max_attempts and not cancel_event.is_set():
+        logger.warning(
+            "Alarm trigger failed after %d attempts – giving up for this alarm",
+            attempt,
         )
+        _notify_send(
+            "Massalarme – alarm skipped",
+            f"Phone service did not respond after {attempt} attempts.",
+            urgency="normal",
+            replace_id=_TRIGGER_NOTIFICATION_ID,
+        )
+        return False
 
-        time.sleep(delay)
+    logger.info("Alarm trigger cancelled after %d attempts", attempt)
+    return False
 
 
-def stop_alarm(phone_ip: str, cfg: dict) -> None:
+def _is_alarm_missed(alarm_dt: datetime, *, now: Optional[datetime] = None) -> bool:
+    reference_time = now or datetime.now()
+    return (
+        reference_time - alarm_dt
+    ).total_seconds() > _ALARM_MISFIRE_GRACE_SECONDS
+
+
+def _skip_alarm(alarm_name: str, reason: str) -> None:
+    logger.warning("Skipping alarm '%s': %s", alarm_name, reason)
+    _notify_send(
+        "Massalarme – alarm skipped",
+        f"'{alarm_name}' skipped: {reason}",
+        urgency="normal",
+        replace_id=_TRIGGER_NOTIFICATION_ID,
+    )
+
+
+async def stop_alarm_on_phone(phone_ip: str, cfg: dict) -> None:
     url = _build_url("http://{phone_ip}:{port}/stop", phone_ip, cfg)
     try:
-        resp = requests.get(url, timeout=5)
-        logger.info("Alarm stopped -> %d: %s", resp.status_code, resp.text.strip())
-    except requests.RequestException as exc:
+        async with aiohttp_client.ClientSession(timeout=_HTTP_TIMEOUT) as session:
+            async with session.get(url) as resp:
+                body = await resp.text()
+                logger.info("Alarm stopped -> %d: %s", resp.status, body.strip())
+    except (aiohttp_client.ClientError, asyncio.TimeoutError, OSError) as exc:
         logger.error("Stop alarm failed: %s", exc)
 
 
-def sync_alarms_to_phone(phone_ip: str, cfg: dict, alarms_config: dict) -> None:
+async def sync_alarms_to_phone(phone_ip: str, cfg: dict, alarms_config: dict) -> None:
     url = _build_url("http://{phone_ip}:{port}/sync-alarms", phone_ip, cfg)
     try:
-        resp = requests.post(url, json=alarms_config, timeout=5)
-        logger.info("Alarms synced to phone -> %d", resp.status_code)
-    except requests.RequestException as exc:
+        async with aiohttp_client.ClientSession(timeout=_HTTP_TIMEOUT) as session:
+            async with session.post(url, json=alarms_config) as resp:
+                logger.info("Alarms synced to phone -> %d", resp.status)
+    except (aiohttp_client.ClientError, asyncio.TimeoutError, OSError) as exc:
         logger.warning("Failed to sync alarms to phone: %s", exc)
 
 
@@ -642,13 +951,15 @@ async def wait_for_weight(cfg: dict, alarm_name: str) -> Optional[float]:
     scanner = BleakScanner(detection_callback=on_advertisement)
     await scanner.start()
     try:
-        # Fresh event AFTER scanner start — discards stale WS dismiss from startAlarm() cleanup
-        _alarm_dismissed = asyncio.Event()
+        dismiss_event = _alarm_dismissed
+        if dismiss_event is None:
+            dismiss_event = asyncio.Event()
+            _alarm_dismissed = dismiss_event
 
         done, _ = await asyncio.wait(
             [
                 asyncio.create_task(weight_received.wait()),
-                asyncio.create_task(_alarm_dismissed.wait()),
+                asyncio.create_task(dismiss_event.wait()),
             ],
             timeout=300,
             return_when=asyncio.FIRST_COMPLETED,
@@ -656,29 +967,30 @@ async def wait_for_weight(cfg: dict, alarm_name: str) -> Optional[float]:
         if not done:
             logger.warning("Timeout: No stable weight in 5 minutes.")
             return None
-        if _alarm_dismissed.is_set():
-            logger.info("Alarm dismissed via passphrase – stopping scale listener.")
+        if dismiss_event.is_set():
+            logger.info(
+                "Alarm dismissed via passphrase \u2013 stopping scale listener."
+            )
             return None
         return detected_weight[0] if detected_weight else None
     finally:
         await scanner.stop()
-        _alarm_dismissed = None
 
 
 # =====================================================================
 # PC WebSocket + HTTP server
 # =====================================================================
 
-_current_alarms: Dict = {}
+_current_alarms: Dict = {"version": 2, "alarms": []}
 _current_cfg: dict = {}
 _ws_clients: weakref.WeakSet[web.WebSocketResponse] = weakref.WeakSet()
 _alarm_dismissed: Optional[asyncio.Event] = None
-_alarm_active: bool = False  # True while an alarm cycle is in progress
-_phone_ip: Optional[str] = None  # Last-known phone IP for failsafe handler
+_alarm_active: bool = False
+_phone_ip: Optional[str] = None
 
 
 async def _handle_alarms(request: web.Request) -> web.Response:
-    """GET /alarms?key=<secret> — HTTP fallback for alarm data."""
+    """GET /alarms?key=<secret> \u2014 HTTP fallback for alarm data."""
     secret = _current_cfg.get("shared_secret", "")
     key = request.query.get("key", "")
     if not secret or key != secret:
@@ -687,7 +999,7 @@ async def _handle_alarms(request: web.Request) -> web.Response:
 
 
 async def _handle_stop_alarm(request: web.Request) -> web.Response:
-    """GET /stop-alarm?key=<secret> — failsafe: stop the alarm from the PC."""
+    """GET /stop-alarm?key=<secret> \u2014 failsafe: stop the alarm from the PC."""
     secret = _current_cfg.get("shared_secret", "")
     key = request.query.get("key", "")
     if not secret or key != secret:
@@ -706,13 +1018,14 @@ async def _handle_stop_alarm(request: web.Request) -> web.Response:
     phone_ip = _phone_ip
     if phone_ip:
         try:
-            stop_alarm(phone_ip, _current_cfg)
+            await stop_alarm_on_phone(phone_ip, _current_cfg)
         except Exception as exc:
             logger.error("Failsafe stop_alarm to phone failed: %s", exc)
 
     _alarm_active = False
+    _clear_alarm_state()
     _notify_send(
-        "Massalarme – alarm stopped",
+        "Massalarme \u2013 alarm stopped",
         "Failsafe stop from PC",
         urgency="normal",
         timeout_ms=5000,
@@ -721,11 +1034,11 @@ async def _handle_stop_alarm(request: web.Request) -> web.Response:
 
 
 async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
-    """WebSocket endpoint. Auth via ?key= on connect, then push alarms."""
     secret = _current_cfg.get("shared_secret", "")
     key = request.query.get("key", "")
     if not secret or key != secret:
-        return web.Response(status=403, text="Invalid key")
+        resp = web.Response(status=403, text="Invalid key")
+        return resp  # type: ignore[return-value]
 
     ws = web.WebSocketResponse(heartbeat=15)
     await ws.prepare(request)
@@ -733,7 +1046,7 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
     peer = request.remote or "unknown"
     logger.info("WS client connected: %s (%d total)", peer, len(_ws_clients))
     _notify_send(
-        "Massalarme – phone connected",
+        "Massalarme \u2013 phone connected",
         peer,
         urgency="low",
         timeout_ms=4000,
@@ -752,21 +1065,18 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
                     payload = json.loads(msg.data)
                     msg_type = payload.get("type", "")
                     if msg_type == "update_alarms":
-                        new_alarms = payload.get("data")
-                        if not isinstance(new_alarms, dict):
+                        phone_alarms = payload.get("data")
+                        if not isinstance(phone_alarms, dict):
                             await ws.send_json(
                                 {"type": "error", "message": "Invalid alarms data"}
                             )
                             continue
-                        # Write to alarms.json
-                        ALARMS_FILE.write_text(
-                            json.dumps(new_alarms, indent=2, ensure_ascii=False),
-                            encoding="utf-8",
-                        )
+                        merged = merge_alarms(_current_alarms, phone_alarms)
+                        _save_alarms(merged)
                         _current_alarms.clear()
-                        _current_alarms.update(new_alarms)
-                        logger.info("Alarms updated via WS from %s", peer)
-                        await broadcast_alarms(_current_alarms)
+                        _current_alarms.update(merged)
+                        logger.info("Alarms merged via WS from %s", peer)
+                        await broadcast_alarms(_current_alarms, exclude=ws)
                     elif msg_type == "alarm_dismissed":
                         logger.info("Alarm dismissed via passphrase (from %s)", peer)
                         if _alarm_dismissed is not None:
@@ -782,7 +1092,7 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
         logger.info("WS client disconnected: %s (%d remain)", peer, len(_ws_clients))
         if not _ws_clients:
             _notify_send(
-                "Massalarme – phone disconnected",
+                "Massalarme \u2013 phone disconnected",
                 f"WebSocket lost ({peer}). Waiting for reconnection...",
                 urgency="normal",
                 timeout_ms=10000,
@@ -792,11 +1102,16 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
-async def broadcast_alarms(alarms_config: Dict) -> None:
-    """Push updated alarms to all connected WebSocket clients."""
+async def broadcast_alarms(
+    alarms_config: Dict,
+    *,
+    exclude: Optional[web.WebSocketResponse] = None,
+) -> None:
     payload = json.dumps({"type": "alarms", "data": alarms_config})
     stale: list[web.WebSocketResponse] = []
     for ws in set(_ws_clients):
+        if ws is exclude:
+            continue
         try:
             await ws.send_str(payload)
         except (ConnectionResetError, ConnectionError, Exception):
@@ -832,6 +1147,40 @@ async def _start_pc_server(cfg: dict) -> None:
 
 
 # =====================================================================
+# Alarm cycle
+# =====================================================================
+
+
+async def _run_alarm_cycle(phone_ip: str, cfg: dict, alarm_name: str) -> None:
+    global _alarm_active, _alarm_dismissed
+
+    _alarm_active = True
+    _write_alarm_state(alarm_name, phone_ip)
+
+    try:
+        _alarm_dismissed = asyncio.Event()
+
+        await ensure_bluetooth_on()
+
+        triggered = await trigger_alarm(phone_ip, cfg, _alarm_dismissed)
+
+        if not triggered:
+            logger.info("Alarm trigger cancelled before phone acknowledged.")
+            return
+
+        weight_kg = await wait_for_weight(cfg, alarm_name)
+        if weight_kg is not None:
+            await stop_alarm_on_phone(phone_ip, cfg)
+            await _broadcast_weight(weight_kg)
+        else:
+            logger.info("Scale listener ended without weight (passphrase or timeout).")
+    finally:
+        _alarm_active = False
+        _alarm_dismissed = None
+        _clear_alarm_state()
+
+
+# =====================================================================
 # Main loop
 # =====================================================================
 
@@ -848,31 +1197,45 @@ async def main_loop() -> None:
     alarms_config, last_mtime = load_alarms()
     _current_alarms = alarms_config
 
-    # Start the PC HTTP server so the phone can pull alarms
     await _start_pc_server(cfg)
+
+    await ensure_bluetooth_on()
 
     phone_ip = await discover_phone_ip(cfg)
     _phone_ip = phone_ip
     logger.info("Using phone IP: %s", phone_ip)
-    sync_alarms_to_phone(phone_ip, cfg, alarms_config)
+    await sync_alarms_to_phone(phone_ip, cfg, alarms_config)
+
+    stale_state = _read_alarm_state()
+    if stale_state:
+        stale_name = stale_state.get("alarm_name", "unknown")
+        logger.warning(
+            "Alarm '%s' was active before daemon restart \u2013 skipping stale alarm state",
+            stale_name,
+        )
+        _notify_send(
+            "Massalarme \u2013 stale alarm cleared",
+            f"'{stale_name}' was active before restart and will not be resumed.",
+            urgency="normal",
+            replace_id=_TRIGGER_NOTIFICATION_ID,
+        )
+        _clear_alarm_state()
 
     cached_next_alarm: Optional[Tuple[datetime, str]] = None
 
     while True:
         try:
-            # Check for config changes
             new_config, new_mtime = load_alarms()
             if new_mtime != last_mtime:
-                logger.info("alarms.json updated – reloading configuration.")
+                logger.info("alarms.json updated \u2013 reloading configuration.")
                 log_upcoming_alarms(new_config, limit=8)
                 alarms_config = new_config
                 _current_alarms = alarms_config
                 last_mtime = new_mtime
                 cached_next_alarm = None
                 await broadcast_alarms(alarms_config)
-                sync_alarms_to_phone(phone_ip, cfg, alarms_config)
+                await sync_alarms_to_phone(phone_ip, cfg, alarms_config)
 
-            # Get next alarm
             if cached_next_alarm is None:
                 cached_next_alarm = get_next_alarm_time(alarms_config)
 
@@ -891,12 +1254,18 @@ async def main_loop() -> None:
                 await asyncio.sleep(min(1, time_to_prep))
                 continue
 
-            # --- Prep time reached ---
-            logger.info("Prep time for '%s' – running now.", alarm_name)
-            phone_ip = await discover_phone_ip(cfg)
+            logger.info("Prep time for '%s' \u2013 running now.", alarm_name)
+            await ensure_bluetooth_on()
+            prep_phone_ip = await discover_phone_ip_until(cfg, alarm_dt)
+            if prep_phone_ip is None:
+                _skip_alarm(alarm_name, "phone was unavailable before alarm time")
+                cached_next_alarm = None
+                await asyncio.sleep(1)
+                continue
+            phone_ip = prep_phone_ip
             _phone_ip = phone_ip
             await broadcast_alarms(alarms_config)
-            sync_alarms_to_phone(phone_ip, cfg, alarms_config)
+            await sync_alarms_to_phone(phone_ip, cfg, alarms_config)
 
             now = datetime.now()
             time_to_alarm = (alarm_dt - now).total_seconds()
@@ -907,12 +1276,17 @@ async def main_loop() -> None:
                     alarm_dt.strftime("%H:%M:%S"),
                 )
                 await asyncio.sleep(time_to_alarm)
+            elif _is_alarm_missed(alarm_dt, now=now):
+                _skip_alarm(alarm_name, "alarm time already passed")
+                cached_next_alarm = None
+                await asyncio.sleep(1)
+                continue
             else:
-                logger.info("Alarm time already passed – triggering immediately.")
+                logger.info("Alarm time already passed slightly \u2013 triggering immediately.")
 
             if _alarm_active:
                 logger.warning(
-                    "Alarm already active – skipping trigger for '%s'", alarm_name
+                    "Alarm already active \u2013 skipping trigger for '%s'", alarm_name
                 )
                 cached_next_alarm = None
                 await asyncio.sleep(1)
@@ -923,20 +1297,7 @@ async def main_loop() -> None:
                 alarm_name,
                 datetime.now().strftime("%H:%M:%S"),
             )
-            _alarm_active = True
-            try:
-                trigger_alarm(phone_ip, cfg)
-
-                weight_kg = await wait_for_weight(cfg, alarm_name)
-                if weight_kg is not None:
-                    stop_alarm(phone_ip, cfg)
-                    await _broadcast_weight(weight_kg)
-                else:
-                    logger.info(
-                        "Scale listener ended without weight (passphrase or timeout)."
-                    )
-            finally:
-                _alarm_active = False
+            await _run_alarm_cycle(phone_ip, cfg, alarm_name)
 
             cached_next_alarm = None
             await asyncio.sleep(1)
@@ -954,12 +1315,17 @@ async def main_loop() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="massalarme",
-        description="Massalarme – Xiaomi BLE scale → LAN alarm on Android",
+        description="Massalarme \u2013 Xiaomi BLE scale \u2192 LAN alarm on Android",
     )
     parser.add_argument(
         "--show-secret",
         action="store_true",
         help="Display the shared secret as a QR code and exit.",
+    )
+    parser.add_argument(
+        "--alarms",
+        action="store_true",
+        help="Show upcoming alarms and time until each, then exit.",
     )
     args = parser.parse_args()
 
@@ -972,6 +1338,12 @@ def main() -> None:
             logger.error("No shared secret found in config.")
             sys.exit(1)
         _show_secret_qr(secret)
+        sys.exit(0)
+
+    if args.alarms:
+        load_config()
+        alarms_config, _ = load_alarms()
+        print_alarms(alarms_config)
         sys.exit(0)
 
     try:

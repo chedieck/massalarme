@@ -64,22 +64,44 @@ Edit `config.yaml` with your phone's Bluetooth MAC address and LAN subnet.
 
 ```json
 {
-  "monday": [
-    {"name": "Wake up", "time": "07:30"}
-  ],
-  "saturday": [
-    {"name": "Lazy day", "time": "09:00"}
-  ],
-  "date": [
-    {"name": "Dentist", "time": "08:00", "date": "15-04-2026"}
-  ],
-  "next": [
-    {"name": "One-shot", "time": "06:00"}
+  "version": 2,
+  "alarms": [
+    {
+      "id": "a1b2c3d4",
+      "name": "Wake up",
+      "time": "07:30",
+      "days": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+      "enabled": true,
+      "updated_at": 0
+    },
+    {
+      "id": "e5f6g7h8",
+      "name": "Dentist",
+      "time": "08:00",
+      "date": "15-04-2026",
+      "enabled": true,
+      "updated_at": 0
+    },
+    {
+      "id": "i9j0k1l2",
+      "name": "One-shot",
+      "time": "06:00",
+      "type": "next",
+      "enabled": true,
+      "updated_at": 0
+    }
   ]
 }
 ```
 
-Times can be `HH:MM` or `HH:MM:SS`.
+Each alarm has a unique `id` and an `updated_at` timestamp (epoch ms) used for
+sync conflict resolution between PC and phone — latest edit wins.
+
+- **Weekly**: set `days` to a list of weekday names
+- **Date-specific**: set `date` to `DD-MM-YYYY` (no `days` field)
+- **One-shot**: set `type` to `"next"` (fires once at next occurrence)
+
+Times can be `HH:MM` or `HH:MM:SS`. Old v1 format (per-day keys) is auto-migrated.
 
 ### Service management
 
@@ -100,6 +122,7 @@ make disable        # Disable on login
 | `make install` | Full setup: uv venv, XDG dirs, configs, systemd service |
 | `make run` | Run daemon directly (foreground, for debugging) |
 | `make secret` | Show shared secret QR code in terminal |
+| `make alarms` | Show upcoming alarms with time remaining |
 | `make start/stop/restart/status` | systemd service control |
 | `make logs` | Follow journal logs |
 | `make enable/disable` | Autostart on login |

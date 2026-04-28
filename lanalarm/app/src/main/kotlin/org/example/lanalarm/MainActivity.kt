@@ -11,6 +11,7 @@ import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -29,11 +30,22 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val KEY_OVERLAY_REQUESTED = "overlay_permission_requested"
+        private val WEEKDAY_KEYS = listOf(
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday"
+        )
+        private val WEEKDAY_LABELS = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
     }
 
     private lateinit var serviceStatus: TextView
@@ -224,6 +236,7 @@ class MainActivity : AppCompatActivity() {
         alarmsList.removeAllViews()
         alarmsEmpty.visibility = View.GONE
         alarmsScroll.visibility = View.VISIBLE
+        alarmsAdd.visibility = if (AlarmService.wsConnected) View.VISIBLE else View.GONE
 
         val items = if (alarmsJson.isNullOrBlank()) {
             emptyList()
@@ -235,18 +248,24 @@ class MainActivity : AppCompatActivity() {
             alarmsEmpty.visibility = View.VISIBLE
             alarmsScroll.visibility = View.GONE
         } else {
-            var lastLabel: String? = null
-            for (item in items) {
-                val sectionLabel = when (item.category) {
+            val grouped = items.groupBy { it.alarmType }
+            val order = listOf("weekly", "date", "next")
+            var isFirstSection = true
+            for (type in order) {
+                val sectionItems = grouped[type].orEmpty().let { current ->
+                    if (type == "weekly") current.sortedBy { it.time } else current
+                }
+                if (sectionItems.isEmpty()) continue
+                val sectionLabel = when (type) {
                     "date" -> "Date"
                     "next" -> "Next"
-                    else -> item.category.replaceFirstChar { it.titlecase(Locale.getDefault()) }
+                    else -> "Weekly"
                 }
-                if (lastLabel != sectionLabel) {
-                    alarmsList.addView(buildSectionHeader(sectionLabel, lastLabel == null))
-                    lastLabel = sectionLabel
+                alarmsList.addView(buildSectionHeader(sectionLabel, isFirstSection))
+                isFirstSection = false
+                for (item in sectionItems) {
+                    alarmsList.addView(buildAlarmRow(item))
                 }
-                alarmsList.addView(buildAlarmRow(item))
             }
         }
 
@@ -259,68 +278,77 @@ class MainActivity : AppCompatActivity() {
     }
 
     private data class AlarmItem(
-        val label: String,
+        val id: String,
         val time: String,
         val name: String,
-        val category: String,
-        val index: Int
-    )
+        val alarmType: String,
+        val days: List<String> = emptyList(),
+        val date: String? = null,
+        val enabled: Boolean = true,
+        val updatedAt: Long = 0L
+    ) {
+        val label: String
+            get() = when (alarmType) {
+                "date" -> date.orEmpty().ifBlank { "Date" }
+                "next" -> "Next"
+                else -> days
+                    .sortedBy { WEEKDAY_KEYS.indexOf(it) }
+                    .map { day ->
+                        val index = WEEKDAY_KEYS.indexOf(day)
+                        if (index >= 0) WEEKDAY_LABELS[index]
+                        else day.replaceFirstChar { it.titlecase(Locale.getDefault()) }
+                    }
+                    .ifEmpty { listOf("Weekly") }
+                    .joinToString(", ")
+            }
+
+        val category: String
+            get() = alarmType
+    }
 
     private fun parseAlarmsJson(raw: String): List<AlarmItem> {
         return try {
             val root = JSONObject(raw)
             val items = mutableListOf<AlarmItem>()
-            val days = listOf(
-                "monday",
-                "tuesday",
-                "wednesday",
-                "thursday",
-                "friday",
-                "saturday",
-                "sunday"
-            )
+            val alarms = root.optJSONArray("alarms") ?: JSONArray()
 
-            for (day in days) {
-                val label = day.replaceFirstChar { it.titlecase(Locale.getDefault()) }
-                addAlarmItems(items, root.optJSONArray(day), label, day) { label }
+            for (i in 0 until alarms.length()) {
+                val obj = alarms.optJSONObject(i) ?: continue
+                val id = obj.optString("id", "")
+                val time = obj.optString("time", "")
+                val name = obj.optString("name", "")
+                val days = jsonArrayToStringList(obj.optJSONArray("days"))
+                    .map { it.lowercase(Locale.getDefault()) }
+                    .filter { it in WEEKDAY_KEYS }
+                val date = obj.optString("date", "").ifBlank { null }
+                val alarmType = when {
+                    obj.optString("type") == "next" -> "next"
+                    date != null -> "date"
+                    else -> "weekly"
+                }
+                if (id.isBlank() || (time.isBlank() && name.isBlank())) continue
+                items.add(
+                    AlarmItem(
+                        id = id,
+                        time = time,
+                        name = if (name.isNotBlank()) name else when (alarmType) {
+                            "date" -> date ?: "Date"
+                            "next" -> "Next"
+                            else -> "Weekly"
+                        },
+                        alarmType = alarmType,
+                        days = if (alarmType == "weekly") days else emptyList(),
+                        date = date,
+                        enabled = obj.optBoolean("enabled", true),
+                        updatedAt = obj.optLong("updated_at", 0L)
+                    )
+                )
             }
-
-            addAlarmItems(items, root.optJSONArray("date"), "Date", "date") { obj ->
-                obj.optString("date", "Date")
-            }
-
-            addAlarmItems(items, root.optJSONArray("next"), "Next", "next") { _ -> "Next" }
 
             items
         } catch (e: Exception) {
             Toast.makeText(this, "Failed to parse alarms", Toast.LENGTH_SHORT).show()
             emptyList()
-        }
-    }
-
-    private fun addAlarmItems(
-        items: MutableList<AlarmItem>,
-        arr: JSONArray?,
-        fallbackLabel: String,
-        category: String,
-        labelProvider: (JSONObject) -> String
-    ) {
-        if (arr == null) return
-        for (i in 0 until arr.length()) {
-            val obj = arr.optJSONObject(i) ?: continue
-            val time = obj.optString("time", "")
-            val name = obj.optString("name", "")
-            val label = labelProvider(obj).ifBlank { fallbackLabel }
-            if (time.isBlank() && name.isBlank()) continue
-            items.add(
-                AlarmItem(
-                    label,
-                    time,
-                    if (name.isNotBlank()) name else label,
-                    category,
-                    i
-                )
-            )
         }
     }
 
@@ -415,6 +443,22 @@ class MainActivity : AppCompatActivity() {
             setPadding(dpToPx(20), dpToPx(12), dpToPx(20), dpToPx(8))
         }
 
+        val typeOptions = listOf("Weekly", "Date", "Next")
+        val typeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                typeOptions
+            )
+            setSelection(
+                when (item.alarmType) {
+                    "date" -> 1
+                    "next" -> 2
+                    else -> 0
+                }
+            )
+        }
+
         val nameInput = EditText(this).apply {
             hint = "Name"
             setText(item.name)
@@ -427,41 +471,73 @@ class MainActivity : AppCompatActivity() {
 
         val dateInput = EditText(this).apply {
             hint = "DD-MM-YYYY"
+            setText(item.date.orEmpty())
         }
 
+        val weekdaysLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        val dayCheckboxes = WEEKDAY_KEYS.mapIndexed { index, day ->
+            CheckBox(this).apply {
+                text = WEEKDAY_LABELS[index]
+                isChecked = day in item.days
+            }.also { weekdaysLayout.addView(it) }
+        }
+
+        fun updateTypeVisibility(position: Int) {
+            weekdaysLayout.visibility = if (position == 0) View.VISIBLE else View.GONE
+            dateInput.visibility = if (position == 1) View.VISIBLE else View.GONE
+        }
+
+        typeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(
+                parent: AdapterView<*>?,
+                view: View?,
+                position: Int,
+                id: Long
+            ) {
+                updateTypeVisibility(position)
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
+        content.addView(typeSpinner)
         content.addView(nameInput)
         content.addView(timeInput)
-
-        if (item.category == "date") {
-            val prefs = getSharedPreferences(AlarmService.PREFS_NAME, MODE_PRIVATE)
-            val raw = prefs.getString(AlarmService.KEY_ALARMS, "{}") ?: "{}"
-            val root = JSONObject(raw)
-            val arr = root.optJSONArray("date")
-            val obj = arr?.optJSONObject(item.index)
-            dateInput.setText(obj?.optString("date", "") ?: "")
-            content.addView(dateInput)
-        }
+        content.addView(weekdaysLayout)
+        content.addView(dateInput)
+        updateTypeVisibility(typeSpinner.selectedItemPosition)
 
         AlertDialog.Builder(this)
             .setTitle("Edit alarm")
             .setView(content)
             .setPositiveButton("Save") { _, _ ->
                 val prefs = getSharedPreferences(AlarmService.PREFS_NAME, MODE_PRIVATE)
-                val raw = prefs.getString(AlarmService.KEY_ALARMS, "{}") ?: "{}"
-                val root = JSONObject(raw)
-                val arr = root.optJSONArray(item.category) ?: JSONArray()
-                val obj = arr.optJSONObject(item.index) ?: JSONObject()
-                obj.put("name", nameInput.text.toString().trim())
-                obj.put("time", timeInput.text.toString().trim())
-                if (item.category == "date") {
-                    obj.put("date", dateInput.text.toString().trim())
+                val root = loadAlarmsRoot(
+                    prefs.getString(AlarmService.KEY_ALARMS, null)
+                )
+                val arr = root.optJSONArray("alarms") ?: JSONArray()
+                val selectedType = typeOptions[typeSpinner.selectedItemPosition].lowercase(Locale.getDefault())
+                val updatedAlarm = buildAlarmObject(
+                    id = item.id,
+                    type = selectedType,
+                    name = nameInput.text.toString().trim(),
+                    time = timeInput.text.toString().trim(),
+                    selectedDays = selectedWeekdays(dayCheckboxes),
+                    date = dateInput.text.toString().trim(),
+                    enabled = item.enabled,
+                    updatedAt = System.currentTimeMillis()
+                )
+
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    if (obj.optString("id") == item.id) {
+                        arr.put(i, updatedAlarm)
+                        break
+                    }
                 }
-                if (arr.length() <= item.index) {
-                    arr.put(obj)
-                } else {
-                    arr.put(item.index, obj)
-                }
-                root.put(item.category, arr)
+                root.put("alarms", arr)
                 prefs.edit().putString(AlarmService.KEY_ALARMS, root.toString()).apply()
                 sendAlarmsToPC(root.toString())
                 renderAlarms()
@@ -476,12 +552,17 @@ class MainActivity : AppCompatActivity() {
             .setMessage("Delete alarm '${item.name}' at ${item.time}?")
             .setPositiveButton("Delete") { _, _ ->
                 val prefs = getSharedPreferences(AlarmService.PREFS_NAME, MODE_PRIVATE)
-                val raw = prefs.getString(AlarmService.KEY_ALARMS, "{}") ?: "{}"
-                val root = JSONObject(raw)
-                val arr = root.optJSONArray(item.category)
-                if (arr != null && item.index in 0 until arr.length()) {
-                    arr.remove(item.index)
-                    root.put(item.category, arr)
+                val root = loadAlarmsRoot(prefs.getString(AlarmService.KEY_ALARMS, null))
+                val arr = root.optJSONArray("alarms")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        if (obj.optString("id") == item.id) {
+                            arr.remove(i)
+                            break
+                        }
+                    }
+                    root.put("alarms", arr)
                     prefs.edit().putString(AlarmService.KEY_ALARMS, root.toString()).apply()
                     sendAlarmsToPC(root.toString())
                     renderAlarms()
@@ -497,24 +578,14 @@ class MainActivity : AppCompatActivity() {
             setPadding(dpToPx(20), dpToPx(12), dpToPx(20), dpToPx(8))
         }
 
-        val categories = listOf(
-            "Monday",
-            "Tuesday",
-            "Wednesday",
-            "Thursday",
-            "Friday",
-            "Saturday",
-            "Sunday",
-            "Date",
-            "Next"
-        )
-
-        val categorySpinner = Spinner(this)
-        categorySpinner.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            categories
-        )
+        val typeOptions = listOf("Weekly", "Date", "Next")
+        val typeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                typeOptions
+            )
+        }
 
         val nameInput = EditText(this).apply {
             hint = "Name"
@@ -529,22 +600,33 @@ class MainActivity : AppCompatActivity() {
             visibility = View.GONE
         }
 
-        categorySpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+        val weekdaysLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        val dayCheckboxes = WEEKDAY_KEYS.mapIndexed { index, _ ->
+            CheckBox(this).apply {
+                text = WEEKDAY_LABELS[index]
+            }.also { weekdaysLayout.addView(it) }
+        }
+
+        typeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(
                 parent: AdapterView<*>?,
                 view: View?,
                 position: Int,
                 id: Long
             ) {
-                dateInput.visibility = if (categories[position] == "Date") View.VISIBLE else View.GONE
+                weekdaysLayout.visibility = if (position == 0) View.VISIBLE else View.GONE
+                dateInput.visibility = if (position == 1) View.VISIBLE else View.GONE
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
 
-        content.addView(categorySpinner)
+        content.addView(typeSpinner)
         content.addView(nameInput)
         content.addView(timeInput)
+        content.addView(weekdaysLayout)
         content.addView(dateInput)
 
         AlertDialog.Builder(this)
@@ -552,26 +634,81 @@ class MainActivity : AppCompatActivity() {
             .setView(content)
             .setPositiveButton("Add") { _, _ ->
                 val prefs = getSharedPreferences(AlarmService.PREFS_NAME, MODE_PRIVATE)
-                val raw = prefs.getString(AlarmService.KEY_ALARMS, "{}") ?: "{}"
-                val root = JSONObject(raw)
-                val selected = categories[categorySpinner.selectedItemPosition]
-                val categoryKey = selected.lowercase(Locale.getDefault())
-                val arr = root.optJSONArray(categoryKey) ?: JSONArray()
-                val obj = JSONObject().apply {
-                    put("name", nameInput.text.toString().trim())
-                    put("time", timeInput.text.toString().trim())
-                    if (categoryKey == "date") {
-                        put("date", dateInput.text.toString().trim())
-                    }
-                }
-                arr.put(obj)
-                root.put(categoryKey, arr)
+                val root = loadAlarmsRoot(prefs.getString(AlarmService.KEY_ALARMS, null))
+                val arr = root.optJSONArray("alarms") ?: JSONArray()
+                val selectedType = typeOptions[typeSpinner.selectedItemPosition].lowercase(Locale.getDefault())
+                arr.put(
+                    buildAlarmObject(
+                        id = UUID.randomUUID().toString().take(8),
+                        type = selectedType,
+                        name = nameInput.text.toString().trim(),
+                        time = timeInput.text.toString().trim(),
+                        selectedDays = selectedWeekdays(dayCheckboxes),
+                        date = dateInput.text.toString().trim(),
+                        enabled = true,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+                root.put("alarms", arr)
                 prefs.edit().putString(AlarmService.KEY_ALARMS, root.toString()).apply()
                 sendAlarmsToPC(root.toString())
                 renderAlarms()
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun loadAlarmsRoot(raw: String?): JSONObject {
+        val root = try {
+            if (raw.isNullOrBlank()) JSONObject() else JSONObject(raw)
+        } catch (_: Exception) {
+            JSONObject()
+        }
+        root.put("version", 2)
+        if (root.optJSONArray("alarms") == null) {
+            root.put("alarms", JSONArray())
+        }
+        return root
+    }
+
+    private fun buildAlarmObject(
+        id: String,
+        type: String,
+        name: String,
+        time: String,
+        selectedDays: List<String>,
+        date: String,
+        enabled: Boolean,
+        updatedAt: Long
+    ): JSONObject {
+        return JSONObject().apply {
+            put("id", id)
+            put("name", name)
+            put("time", time)
+            put("enabled", enabled)
+            put("updated_at", updatedAt)
+            when (type) {
+                "date" -> put("date", date)
+                "next" -> put("type", "next")
+                else -> put("days", JSONArray(selectedDays))
+            }
+        }
+    }
+
+    private fun selectedWeekdays(dayCheckboxes: List<CheckBox>): List<String> {
+        return dayCheckboxes.mapIndexedNotNull { index, checkBox ->
+            if (checkBox.isChecked) WEEKDAY_KEYS[index] else null
+        }
+    }
+
+    private fun jsonArrayToStringList(arr: JSONArray?): List<String> {
+        if (arr == null) return emptyList()
+        return buildList {
+            for (i in 0 until arr.length()) {
+                val value = arr.optString(i, "")
+                if (value.isNotBlank()) add(value)
+            }
+        }
     }
 
     private fun sendAlarmsToPC(alarmsJson: String) {
