@@ -27,12 +27,13 @@ def main() -> None:
         for uuid, data in adv_data.service_data.items():
             if not uuid.lower().startswith(uuid_prefix):
                 continue
+            raw_hex = " ".join(f"{b:02x}" for b in data)
             flag = data[1]
             raw_weight = data[-2] | (data[-1] << 8)
             weight_kg = raw_weight / 200.0
             ts = datetime.now().strftime("%H:%M:%S")
             marker = " <-- stop flag" if flag == stop_flag else ""
-            print(f"{ts} flag 0x{flag:02x}, {weight_kg:.1f}kg{marker}")
+            print(f"{ts} flag 0x{flag:02x}, {weight_kg:.1f}kg{marker}  [{raw_hex}]")
 
     async def run():
         scanner = BleakScanner(detection_callback=on_advertisement)
