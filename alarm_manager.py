@@ -436,7 +436,8 @@ def _alarm_kind(alarm: Dict) -> str:
 def merge_alarms(local: Dict, remote: Dict) -> Dict:
     """Merge two v2 alarm configs. Per alarm ID, keep the one with the
     latest ``updated_at``. Alarms only on one side are kept (new alarm
-    created while offline)."""
+    created while offline). Soft-deleted alarms (``deleted: true``) are
+    preserved as tombstones so deletions propagate across devices."""
     local_by_id = {a["id"]: a for a in local.get("alarms") or []}
     remote_by_id = {a["id"]: a for a in remote.get("alarms") or []}
     all_ids = set(local_by_id) | set(remote_by_id)
@@ -455,12 +456,67 @@ def merge_alarms(local: Dict, remote: Dict) -> Dict:
     return {"version": 2, "alarms": merged}
 
 
+def _prune_old_tombstones(alarms_config: Dict, *, max_age_days: int = 30) -> Dict:
+    """Remove soft-deleted alarms older than *max_age_days*."""
+    cutoff_ms = _now_ms() - (max_age_days * 86400 * 1000)
+    kept: List[Dict] = []
+    for alarm in alarms_config.get("alarms") or []:
+        if alarm.get("deleted") and alarm.get("updated_at", 0) < cutoff_ms:
+            continue
+        kept.append(alarm)
+    return {"version": 2, "alarms": kept}
+
+
+def _is_active_alarm(alarm: Dict) -> bool:
+    """Return True if alarm is not soft-deleted."""
+    return not alarm.get("deleted", False)
+
+
+def _inject_tombstones_for_removed(old_config: Dict, new_config: Dict) -> Dict:
+    """If alarms were physically removed from the file (manual edit), inject
+    tombstone entries so the deletion propagates via merge. Returns updated config
+    (may modify new_config in place and re-save)."""
+    old_ids = {a["id"] for a in old_config.get("alarms") or [] if not a.get("deleted")}
+    new_by_id = {a["id"]: a for a in new_config.get("alarms") or []}
+    new_ids = set(new_by_id.keys())
+
+    removed_ids = old_ids - new_ids
+    if not removed_ids:
+        return new_config
+
+    now_ms = _now_ms()
+    alarms_list = new_config.get("alarms") or []
+    for aid in removed_ids:
+        old_alarm = next(
+            (a for a in old_config.get("alarms") or [] if a["id"] == aid), None
+        )
+        if old_alarm is None:
+            continue
+        tombstone = {
+            "id": aid,
+            "name": old_alarm.get("name", ""),
+            "time": old_alarm.get("time", ""),
+            "deleted": True,
+            "updated_at": now_ms,
+        }
+        alarms_list.append(tombstone)
+
+    new_config["alarms"] = alarms_list
+    _save_alarms(new_config)
+    logger.info(
+        "Injected %d tombstone(s) for manually removed alarm(s).", len(removed_ids)
+    )
+    return new_config
+
+
 def get_next_alarm_time(alarms_config: Dict) -> Optional[Tuple[datetime, str]]:
     """Return the (datetime, name) of the soonest upcoming alarm, or None."""
     now = datetime.now()
     candidates: List[Tuple[datetime, str]] = []
 
     for alarm in alarms_config.get("alarms") or []:
+        if not _is_active_alarm(alarm):
+            continue
         if not alarm.get("enabled", True):
             continue
         try:
@@ -510,6 +566,8 @@ def _iter_upcoming_alarm_datetimes(
     candidates: List[Tuple[datetime, str]] = []
 
     for alarm in alarms_config.get("alarms") or []:
+        if not _is_active_alarm(alarm):
+            continue
         if not alarm.get("enabled", True):
             continue
         try:
@@ -1195,6 +1253,9 @@ async def main_loop() -> None:
     init_db()
 
     alarms_config, last_mtime = load_alarms()
+    alarms_config = _prune_old_tombstones(alarms_config)
+    _save_alarms(alarms_config)
+    last_mtime = os.path.getmtime(ALARMS_FILE)
     _current_alarms = alarms_config
 
     await _start_pc_server(cfg)
@@ -1227,11 +1288,14 @@ async def main_loop() -> None:
         try:
             new_config, new_mtime = load_alarms()
             if new_mtime != last_mtime:
-                logger.info("alarms.json updated \u2013 reloading configuration.")
+                logger.info("alarms.json updated – reloading configuration.")
+                new_config = _inject_tombstones_for_removed(alarms_config, new_config)
+                new_config = _prune_old_tombstones(new_config)
+                _save_alarms(new_config)
                 log_upcoming_alarms(new_config, limit=8)
                 alarms_config = new_config
                 _current_alarms = alarms_config
-                last_mtime = new_mtime
+                last_mtime = os.path.getmtime(ALARMS_FILE)
                 cached_next_alarm = None
                 await broadcast_alarms(alarms_config)
                 await sync_alarms_to_phone(phone_ip, cfg, alarms_config)

@@ -314,6 +314,7 @@ class MainActivity : AppCompatActivity() {
 
             for (i in 0 until alarms.length()) {
                 val obj = alarms.optJSONObject(i) ?: continue
+                if (obj.optBoolean("deleted", false)) continue
                 val id = obj.optString("id", "")
                 val time = obj.optString("time", "")
                 val name = obj.optString("name", "")
@@ -558,7 +559,9 @@ class MainActivity : AppCompatActivity() {
                     for (i in 0 until arr.length()) {
                         val obj = arr.optJSONObject(i) ?: continue
                         if (obj.optString("id") == item.id) {
-                            arr.remove(i)
+                            obj.put("deleted", true)
+                            obj.put("updated_at", System.currentTimeMillis())
+                            arr.put(i, obj)
                             break
                         }
                     }

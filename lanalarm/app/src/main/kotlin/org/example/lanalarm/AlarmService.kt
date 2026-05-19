@@ -247,10 +247,15 @@ class AlarmService : Service() {
         mergeFrom(local, replaceIfNewer = false)
         mergeFrom(remote, replaceIfNewer = true)
 
+        val cutoffMs = System.currentTimeMillis() - (30L * 86400 * 1000)
+        val pruned = mergedById.values.filter { alarm ->
+            !(alarm.optBoolean("deleted", false) && alarm.optLong("updated_at", Long.MAX_VALUE) < cutoffMs)
+        }
+
         return JSONObject().apply {
             put("version", 2)
             put("alarms", JSONArray().apply {
-                mergedById.values.forEach { put(it) }
+                pruned.forEach { put(it) }
             })
         }
     }
