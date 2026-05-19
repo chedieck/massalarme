@@ -11,7 +11,7 @@ SYSTEMD_DIR := $(HOME)/.config/systemd/user
 ANDROID_DIR := $(SCRIPT_DIR)lanalarm
 
 .PHONY: install venv sync run secret start service-stop restart reload status logs enable disable \
-        apk apk-install clean uninstall stop-alarm alarms
+        apk apk-install clean uninstall stop-alarm alarms listen
 
 # ── Setup ──────────────────────────────────────────────────────────────
 
@@ -78,6 +78,9 @@ disable:
 
 run: sync
 	$(UV) run --python $(PYTHON) alarm_manager.py
+
+listen: sync
+	$(UV) run --python $(PYTHON) listen.py
 
 secret: sync
 	$(UV) run --python $(PYTHON) alarm_manager.py --show-secret
