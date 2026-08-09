@@ -36,16 +36,25 @@ class AlarmService : Service() {
         private const val NOTIFICATION_ALARM_ID = 2
         private const val NOTIFICATION_WS_ID = 3
         private const val NOTIFICATION_WEIGHT_ID = 4
-        const val PREFS_NAME = "massalarme_prefs"
-        const val KEY_SECRET = "shared_secret"
-        const val KEY_ALARMS = "alarms_json"
-        const val KEY_LAST_SYNC = "last_sync"
-        const val KEY_PC_IP = "pc_ip"
-        const val KEY_PC_PORT = "pc_port"
+        const val PREFS_NAME = AppSettings.PREFS_NAME
+        const val KEY_SECRET = AppSettings.KEY_SECRET
+        const val KEY_ALARMS = AppSettings.KEY_ALARMS
+        const val KEY_LAST_SYNC = AppSettings.KEY_LAST_SYNC
+        const val KEY_PC_IP = AppSettings.KEY_PC_IP
+        const val KEY_PC_PORT = AppSettings.KEY_PC_PORT
         const val ACTION_ALARM_STOPPED = "org.example.lanalarm.ALARM_STOPPED"
-        private const val DEFAULT_PC_PORT = 8888
+        const val ACTION_START_ALARM = "org.example.lanalarm.START_ALARM"
+        const val ACTION_UPLOAD_READINGS = "org.example.lanalarm.UPLOAD_READINGS"
+        private const val DEFAULT_PC_PORT = AppSettings.DEFAULT_PC_PORT
         private const val WS_RECONNECT_MS = 15_000L
         private const val WS_PING_INTERVAL_MS = 30_000L
+
+        /** Hard alarms use the siren; soft ones should not wake the neighbours. */
+        private const val ASSET_HARD_ALARM = "trombetas.mp3"
+        private const val ASSET_SOFT_ALARM = "soft.mp3"
+
+        /** Give up scanning for the scale eventually, so BLE is not left running. */
+        private const val SCALE_SCAN_TIMEOUT_MS = 30 * 60 * 1000L
 
         @Volatile
         var instance: AlarmService? = null
@@ -53,6 +62,23 @@ class AlarmService : Service() {
 
         @Volatile
         var wsConnected: Boolean = false
+            private set
+
+        /**
+         * What the dismiss screen needs to know: a hard alarm demands the scale,
+         * a soft one offers a button.
+         */
+        @Volatile
+        var activeAlarmIsHard: Boolean = false
+            private set
+
+        @Volatile
+        var activeAlarmName: String = "Alarm"
+            private set
+
+        /** Why a hard alarm was downgraded, for the dismiss screen to explain. */
+        @Volatile
+        var activeAlarmDowngradeReason: String? = null
             private set
     }
 
@@ -69,6 +95,10 @@ class AlarmService : Service() {
         .readTimeout(0, TimeUnit.SECONDS)
         .build()
     private var wsReconnectScheduled = false
+
+    private lateinit var scaleScanner: ScaleScanner
+    private val uploadExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var scanTimeoutRunnable: Runnable? = null
 
     private val wsPingRunnable = object : Runnable {
         override fun run() {
@@ -115,11 +145,127 @@ class AlarmService : Service() {
 
         startForeground(NOTIFICATION_SERVICE_ID, buildServiceNotification())
 
+        scaleScanner = ScaleScanner(this)
+
         httpServer = AlarmHttpServer(8080)
         httpServer?.start()
         Log.i(TAG, "HTTP server started on port 8080")
 
         connectWebSocket()
+
+        // The phone owns the schedule now: register the next alarm as soon as
+        // the service is alive, not when the PC gets round to telling us.
+        AlarmScheduler.rescheduleNext(this)
+
+        // Anything captured while the PC was unreachable goes out now.
+        uploadReadings()
+    }
+
+    // ─── Scale + reading upload ──────────────────────────────────────
+
+    /** Drain the outbound queue on a background thread. Safe to call often. */
+    fun uploadReadings() {
+        uploadExecutor.execute {
+            when (val result = ReadingUploader(this).upload()) {
+                is ReadingUploader.Result.Delivered ->
+                    Log.i(TAG, "Uploaded ${result.count} reading(s), ${result.remaining} pending")
+                is ReadingUploader.Result.Failed ->
+                    Log.w(TAG, "Upload failed: ${result.reason}")
+                is ReadingUploader.Result.NotConfigured ->
+                    Log.d(TAG, "Upload skipped: ${result.reason}")
+                ReadingUploader.Result.NothingToDo -> Unit
+            }
+        }
+    }
+
+    /**
+     * Record a finished weigh-in and try to ship it.
+     *
+     * Storing first and uploading second is the whole point: the reading is the
+     * user's data the moment the scale reports it, whether or not the PC is up.
+     */
+    private fun recordWeighIn(reading: ScaleCodec.ScaleReading, distinctMeasurements: Int) {
+        val store = ReadingStore(this)
+        try {
+            val isNew = store.insert(
+                ReadingStore.Reading(
+                    externalId = ScaleCodec.externalId(
+                        reading.capturedAtMillis, reading.rawValue, reading.weightKg
+                    ),
+                    capturedAtUtc = ScaleCodec.utcIso(reading.capturedAtMillis),
+                    weightKg = reading.weightKg,
+                    impedance = reading.impedance,
+                    rawValue = reading.rawValue,
+                    alarmName = activeAlarmName.takeIf { mediaPlayer != null },
+                    measurements = distinctMeasurements
+                )
+            )
+            if (!isNew) return
+        } finally {
+            store.close()
+        }
+
+        AppSettings.prefs(this).edit()
+            .putFloat(AppSettings.KEY_LAST_WEIGHT, reading.weightKg.toFloat())
+            .putString(
+                AppSettings.KEY_LAST_WEIGHT_AT,
+                ScaleCodec.utcIso(reading.capturedAtMillis)
+            )
+            .apply()
+
+        showWeightNotification(reading.weightKg)
+        uploadReadings()
+    }
+
+    private val scaleListener = object : ScaleScanner.ScaleListener {
+        override fun onStableWeight(reading: ScaleCodec.ScaleReading) {
+            // The alarm stops on the first stable reading — no standing on the
+            // scale waiting for the session to settle.
+            mainHandler.post {
+                if (mediaPlayer != null) {
+                    Log.i(TAG, "Scale satisfied the alarm at %.2f kg".format(reading.weightKg))
+                    stopAlarm()
+                }
+            }
+        }
+
+        override fun onWeighInComplete(
+            reading: ScaleCodec.ScaleReading,
+            distinctMeasurements: Int
+        ) {
+            recordWeighIn(reading, distinctMeasurements)
+            mainHandler.post { stopScaleScan() }
+        }
+    }
+
+    fun startScaleScan(): Boolean {
+        if (!scaleScanner.start(scaleListener)) return false
+        scanTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        val timeout = Runnable {
+            Log.i(TAG, "Scale scan timed out")
+            stopScaleScan()
+        }
+        scanTimeoutRunnable = timeout
+        mainHandler.postDelayed(timeout, SCALE_SCAN_TIMEOUT_MS)
+        return true
+    }
+
+    fun stopScaleScan() {
+        scanTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        scanTimeoutRunnable = null
+        scaleScanner.stop()
+    }
+
+    fun isScanningScale(): Boolean = scaleScanner.isScanning()
+
+    /** Push the local schedule to the PC so the two stay merged. */
+    fun pushAlarmsToPC(alarmsJson: String) {
+        sendWsMessage(
+            JSONObject().apply {
+                put("type", "update_alarms")
+                put("data", JSONObject(alarmsJson))
+            }.toString()
+        )
     }
 
     // ─── WebSocket client ────────────────────────────────────────────
@@ -199,6 +345,9 @@ class AlarmService : Service() {
                             put("data", mergedAlarms)
                         }.toString()
                     )
+                    // The phone fires its own alarms, so a schedule change has to
+                    // reach AlarmManager or the edit silently does nothing.
+                    AlarmScheduler.rescheduleNext(this)
                     Log.i(TAG, "WS: alarms merged with PC")
                 }
                 "weight_update" -> {
@@ -410,6 +559,7 @@ class AlarmService : Service() {
                             .putString(KEY_ALARMS, mergedAlarms.toString())
                             .putLong(KEY_LAST_SYNC, System.currentTimeMillis())
                             .apply()
+                        AlarmScheduler.rescheduleNext(this@AlarmService)
                         newFixedLengthResponse("Alarms synced")
                     } catch (e: Exception) {
                         Log.w(TAG, "Alarm sync failed: ${e.message}")
@@ -447,7 +597,52 @@ class AlarmService : Service() {
         latch.await(5, TimeUnit.SECONDS)
     }
 
-    private fun startAlarm() {
+    /**
+     * Decide how this alarm behaves, then ring it.
+     *
+     * A hard alarm can only be silenced by standing on the scale. That is only
+     * a fair demand at home, where the scale is — so away from the home network
+     * it degrades to a soft alarm and says why.
+     */
+    private fun startAlarm(
+        name: String = "Alarm",
+        kind: String = AlarmSchedule.KIND_HARD
+    ) {
+        val wantsHard = kind != AlarmSchedule.KIND_SOFT
+        var effectivelyHard = wantsHard
+        var downgradeReason: String? = null
+
+        if (wantsHard) {
+            val home = HomeNetwork.status(this)
+            if (!home.isHome) {
+                effectivelyHard = false
+                downgradeReason = "Away from home (${home.reason}) — dismiss without the scale"
+                Log.i(TAG, "Hard alarm downgraded: ${home.reason}")
+            } else if (!scaleScanner.hasPermission()) {
+                effectivelyHard = false
+                downgradeReason = "Bluetooth scan permission missing — cannot reach the scale"
+                Log.w(TAG, "Hard alarm downgraded: no BLE permission")
+            }
+        }
+
+        activeAlarmName = name
+        activeAlarmIsHard = effectivelyHard
+        activeAlarmDowngradeReason = downgradeReason
+
+        startAlarmPlayback(if (effectivelyHard) ASSET_HARD_ALARM else ASSET_SOFT_ALARM)
+
+        if (effectivelyHard) {
+            if (!startScaleScan()) {
+                // Could not start scanning after all. Rather than trap the user,
+                // fall back to the soft path — the passphrase still works either way.
+                Log.e(TAG, "Scale scan failed to start — falling back to soft dismissal")
+                activeAlarmIsHard = false
+                activeAlarmDowngradeReason = "Could not start Bluetooth scan"
+            }
+        }
+    }
+
+    private fun startAlarmPlayback(assetName: String) {
         try {
             // Idempotency: if alarm is already playing, do NOT restart.
             // Restarting would kill AlarmDismissActivity and wipe password input.
@@ -484,7 +679,10 @@ class AlarmService : Service() {
             am.requestAudioFocus(audioFocusRequest!!)
             Log.d(TAG, "Audio focus acquired")
 
-            val afd = assets.openFd("trombetas.mp3")
+            // Fall back to the siren if the softer tone was never added, rather
+            // than silently failing to ring at all.
+            val resolvedAsset = if (assetExists(assetName)) assetName else ASSET_HARD_ALARM
+            val afd = assets.openFd(resolvedAsset)
             mediaPlayer = MediaPlayer().apply {
                 setAudioAttributes(attrs)
                 setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
@@ -493,7 +691,7 @@ class AlarmService : Service() {
                 start()
             }
             afd.close()
-            Log.i(TAG, "MediaPlayer created and playing trombetas.mp3")
+            Log.i(TAG, "MediaPlayer created and playing $resolvedAsset")
 
             startVolumeGuard()
             val filter = IntentFilter("android.media.VOLUME_CHANGED_ACTION")
@@ -511,6 +709,9 @@ class AlarmService : Service() {
             Log.e(TAG, "startAlarm() FAILED", e)
         }
     }
+
+    private fun assetExists(name: String): Boolean =
+        runCatching { assets.openFd(name).close() }.isSuccess
 
     private fun launchDismissActivity() {
         val intent = Intent(this, AlarmDismissActivity::class.java).apply {
@@ -621,6 +822,16 @@ class AlarmService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START_ALARM -> {
+                val name = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_NAME) ?: "Alarm"
+                val kind = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_KIND)
+                    ?: AlarmSchedule.KIND_HARD
+                Log.i(TAG, "Starting alarm '$name' ($kind) from the phone's own schedule")
+                runOnMainAndWait { startAlarm(name, kind) }
+            }
+            ACTION_UPLOAD_READINGS -> uploadReadings()
+        }
         return START_STICKY
     }
 
@@ -634,6 +845,8 @@ class AlarmService : Service() {
         wsClient?.cancel()
         wsClient = null
         httpServer?.stop()
+        stopScaleScan()
+        uploadExecutor.shutdown()
         stopAlarm()
         super.onDestroy()
     }

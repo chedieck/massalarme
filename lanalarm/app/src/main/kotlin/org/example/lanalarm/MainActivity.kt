@@ -63,6 +63,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var alarmsLastSync: TextView
     private lateinit var alarmsAdd: Button
     private lateinit var wsStatus: TextView
+    private lateinit var nextAlarmStatus: TextView
+    private lateinit var homeWifiStatus: TextView
+    private lateinit var setHomeWifiButton: Button
+    private lateinit var permissionsStatus: TextView
+    private lateinit var grantPermissionsButton: Button
+    private lateinit var readingsStatus: TextView
+    private lateinit var uploadNowButton: Button
+    private lateinit var weighNowButton: Button
 
     private val wsStatusRunnable = object : Runnable {
         override fun run() {
@@ -77,20 +85,37 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
-        if (result.contents != null) {
-            getSharedPreferences(AlarmService.PREFS_NAME, MODE_PRIVATE)
-                .edit()
-                .putString(AlarmService.KEY_SECRET, result.contents)
-                .apply()
-            Toast.makeText(this, "Secret saved", Toast.LENGTH_SHORT).show()
-            updateUI()
+        val contents = result.contents ?: return@registerForActivityResult
+        // The QR now carries the PC's address and the scale parameters as well as
+        // the secret, because the phone has to work without the PC prompting it.
+        if (AppSettings.applyProvisioning(this, contents)) {
+            Toast.makeText(this, "Paired with PC", Toast.LENGTH_SHORT).show()
+            AlarmService.instance?.reconnectWebSocketNow()
+            AlarmService.instance?.uploadReadings()
+        } else {
+            Toast.makeText(this, "That QR code was not recognised", Toast.LENGTH_LONG).show()
         }
+        updateUI()
     }
 
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) launchScanner()
+    }
+
+    private val runtimePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val denied = grants.filterValues { !it }.keys
+        if (denied.isNotEmpty()) {
+            Toast.makeText(
+                this,
+                "Without these, hard alarms fall back to a dismiss button",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        updateUI()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -112,6 +137,23 @@ class MainActivity : AppCompatActivity() {
         alarmsLastSync = findViewById(R.id.alarms_last_sync)
         alarmsAdd = findViewById(R.id.alarms_add)
         wsStatus = findViewById(R.id.ws_status)
+        nextAlarmStatus = findViewById(R.id.next_alarm_status)
+        homeWifiStatus = findViewById(R.id.home_wifi_status)
+        setHomeWifiButton = findViewById(R.id.set_home_wifi)
+        permissionsStatus = findViewById(R.id.permissions_status)
+        grantPermissionsButton = findViewById(R.id.grant_permissions)
+        readingsStatus = findViewById(R.id.readings_status)
+        uploadNowButton = findViewById(R.id.upload_now)
+        weighNowButton = findViewById(R.id.weigh_now)
+
+        setHomeWifiButton.setOnClickListener { captureHomeNetwork() }
+        grantPermissionsButton.setOnClickListener { requestRuntimePermissions() }
+        uploadNowButton.setOnClickListener {
+            AlarmService.instance?.uploadReadings()
+            Toast.makeText(this, "Uploading…", Toast.LENGTH_SHORT).show()
+            uploadNowButton.postDelayed({ updateUI() }, 1500)
+        }
+        weighNowButton.setOnClickListener { toggleScaleListening() }
 
         tabSettings.setOnClickListener { selectTab(Tab.SETTINGS) }
         tabAlarms.setOnClickListener { selectTab(Tab.ALARMS) }
@@ -188,9 +230,14 @@ class MainActivity : AppCompatActivity() {
         serviceStatus.text = if (running) "Service: Running" else "Service: Stopped"
         serviceToggle.text = if (running) "Stop Service" else "Start Service"
 
-        val hasSecret = !getSharedPreferences(AlarmService.PREFS_NAME, MODE_PRIVATE)
-            .getString(AlarmService.KEY_SECRET, null).isNullOrEmpty()
-        secretStatus.text = if (hasSecret) "Secret: Configured" else "Secret: Not set"
+        val pcAddress = AppSettings.pcBaseUrl(this)
+        secretStatus.text = when {
+            AppSettings.secret(this) == null -> "Not paired — scan the QR code"
+            pcAddress == null -> "Paired, but PC address unknown — rescan"
+            else -> "Paired with $pcAddress"
+        }
+
+        updateSensingStatus()
 
         val bootState = packageManager.getComponentEnabledSetting(
             ComponentName(this, BootReceiver::class.java)
@@ -198,6 +245,133 @@ class MainActivity : AppCompatActivity() {
         // DEFAULT means manifest value (now true), so treat as enabled
         bootToggle.isChecked = bootState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
                 || bootState == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+    }
+
+    /**
+     * The permissions the phone needs to do the job the PC used to do:
+     * BLE scanning for the scale, and location (which is what Android makes you
+     * ask for to read the wifi SSID and, below API 31, to see scan results).
+     */
+    private fun missingRuntimePermissions(): List<String> {
+        val wanted = mutableListOf(android.Manifest.permission.ACCESS_FINE_LOCATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            wanted += android.Manifest.permission.BLUETOOTH_SCAN
+            wanted += android.Manifest.permission.BLUETOOTH_CONNECT
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            wanted += android.Manifest.permission.POST_NOTIFICATIONS
+        }
+        return wanted.filter {
+            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun requestRuntimePermissions() {
+        val missing = missingRuntimePermissions()
+        if (missing.isEmpty()) {
+            Toast.makeText(this, "All permissions granted", Toast.LENGTH_SHORT).show()
+            return
+        }
+        runtimePermissionLauncher.launch(missing.toTypedArray())
+    }
+
+    private fun captureHomeNetwork() {
+        if (!HomeNetwork.hasPermission(this)) {
+            Toast.makeText(
+                this,
+                "Location permission is needed to read the wifi name",
+                Toast.LENGTH_LONG
+            ).show()
+            requestRuntimePermissions()
+            return
+        }
+
+        val ssid = HomeNetwork.currentSsid(this)
+        if (ssid == null) {
+            Toast.makeText(
+                this,
+                "Not connected to wifi (or the name is unavailable)",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        AppSettings.setHomeNetwork(this, ssid, HomeNetwork.currentBssid(this))
+        Toast.makeText(this, "Home wifi set to $ssid", Toast.LENGTH_SHORT).show()
+        updateUI()
+    }
+
+    /**
+     * Manual scale listening, outside an alarm — useful for a midday weigh-in
+     * and for checking the scale is reachable at all.
+     */
+    private fun toggleScaleListening() {
+        val service = AlarmService.instance
+        if (service == null) {
+            Toast.makeText(this, "Service is not running", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (service.isScanningScale()) {
+            service.stopScaleScan()
+            Toast.makeText(this, "Stopped listening", Toast.LENGTH_SHORT).show()
+        } else if (service.startScaleScan()) {
+            Toast.makeText(this, "Listening for the scale — step on it", Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(
+                this,
+                "Could not start scanning — check Bluetooth and permissions",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        updateUI()
+    }
+
+    private fun updateSensingStatus() {
+        nextAlarmStatus.text = AlarmScheduler.nextAlarmDescription(this)
+
+        val home = HomeNetwork.status(this)
+        val configured = AppSettings.homeSsid(this)
+        homeWifiStatus.text = when {
+            configured == null -> "Home wifi: not set — hard alarms always apply"
+            home.isHome -> "Home wifi: $configured (currently home)"
+            else -> "Home wifi: $configured — ${home.reason}"
+        }
+
+        val missing = missingRuntimePermissions()
+        permissionsStatus.text = if (missing.isEmpty()) {
+            "Permissions: all granted"
+        } else {
+            "Permissions: ${missing.size} missing — hard alarms will downgrade"
+        }
+        grantPermissionsButton.visibility = if (missing.isEmpty()) View.GONE else View.VISIBLE
+
+        val store = ReadingStore(this)
+        val pending = try {
+            store.pendingCount()
+        } finally {
+            store.close()
+        }
+
+        val prefs = AppSettings.prefs(this)
+        val lastWeight = prefs.getFloat(AppSettings.KEY_LAST_WEIGHT, 0f)
+        val lastWeightAt = prefs.getString(AppSettings.KEY_LAST_WEIGHT_AT, null)
+        val lastError = prefs.getString(AppSettings.KEY_LAST_UPLOAD_ERROR, null)
+
+        readingsStatus.text = buildString {
+            if (lastWeight > 0f && lastWeightAt != null) {
+                append("Last weigh-in: %.1f kg (%s)".format(lastWeight, lastWeightAt))
+            } else {
+                append("No weigh-ins recorded yet")
+            }
+            append("\n")
+            append(if (pending == 0) "All readings uploaded" else "$pending waiting to upload")
+            if (!lastError.isNullOrBlank()) append("\nLast error: $lastError")
+        }
+
+        weighNowButton.text =
+            if (AlarmService.instance?.isScanningScale() == true) "Stop listening"
+            else "Listen for scale"
     }
 
     private fun updateWsStatus() {
@@ -285,7 +459,12 @@ class MainActivity : AppCompatActivity() {
         val days: List<String> = emptyList(),
         val date: String? = null,
         val enabled: Boolean = true,
-        val updatedAt: Long = 0L
+        val updatedAt: Long = 0L,
+        /** "hard" needs the scale; "soft" is dismissible. */
+        val kind: String = AlarmSchedule.KIND_HARD,
+        /** Set on alarms derived from the ontoplano planner. */
+        val origin: String? = null,
+        val originId: String? = null
     ) {
         val label: String
             get() = when (alarmType) {
@@ -341,7 +520,11 @@ class MainActivity : AppCompatActivity() {
                         days = if (alarmType == "weekly") days else emptyList(),
                         date = date,
                         enabled = obj.optBoolean("enabled", true),
-                        updatedAt = obj.optLong("updated_at", 0L)
+                        updatedAt = obj.optLong("updated_at", 0L),
+                        kind = obj.optString("kind", AlarmSchedule.KIND_HARD)
+                            .lowercase(Locale.getDefault()),
+                        origin = obj.optString("origin").ifBlank { null },
+                        originId = obj.optString("origin_id").ifBlank { null }
                     )
                 )
             }
@@ -503,7 +686,10 @@ class MainActivity : AppCompatActivity() {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
 
+        val kindSpinner = buildKindSpinner(item.kind)
+
         content.addView(typeSpinner)
+        content.addView(kindSpinner)
         content.addView(nameInput)
         content.addView(timeInput)
         content.addView(weekdaysLayout)
@@ -528,7 +714,10 @@ class MainActivity : AppCompatActivity() {
                     selectedDays = selectedWeekdays(dayCheckboxes),
                     date = dateInput.text.toString().trim(),
                     enabled = item.enabled,
-                    updatedAt = System.currentTimeMillis()
+                    updatedAt = System.currentTimeMillis(),
+                    kind = kindSpinner.selectedKind(),
+                    origin = item.origin,
+                    originId = item.originId
                 )
 
                 for (i in 0 until arr.length()) {
@@ -541,7 +730,9 @@ class MainActivity : AppCompatActivity() {
                 root.put("alarms", arr)
                 prefs.edit().putString(AlarmService.KEY_ALARMS, root.toString()).apply()
                 sendAlarmsToPC(root.toString())
+                AlarmScheduler.rescheduleNext(this)
                 renderAlarms()
+                updateSensingStatus()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -626,7 +817,10 @@ class MainActivity : AppCompatActivity() {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
 
+        val kindSpinner = buildKindSpinner(AlarmSchedule.KIND_HARD)
+
         content.addView(typeSpinner)
+        content.addView(kindSpinner)
         content.addView(nameInput)
         content.addView(timeInput)
         content.addView(weekdaysLayout)
@@ -649,13 +843,16 @@ class MainActivity : AppCompatActivity() {
                         selectedDays = selectedWeekdays(dayCheckboxes),
                         date = dateInput.text.toString().trim(),
                         enabled = true,
-                        updatedAt = System.currentTimeMillis()
+                        updatedAt = System.currentTimeMillis(),
+                        kind = kindSpinner.selectedKind()
                     )
                 )
                 root.put("alarms", arr)
                 prefs.edit().putString(AlarmService.KEY_ALARMS, root.toString()).apply()
                 sendAlarmsToPC(root.toString())
+                AlarmScheduler.rescheduleNext(this)
                 renderAlarms()
+                updateSensingStatus()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -682,7 +879,10 @@ class MainActivity : AppCompatActivity() {
         selectedDays: List<String>,
         date: String,
         enabled: Boolean,
-        updatedAt: Long
+        updatedAt: Long,
+        kind: String = AlarmSchedule.KIND_HARD,
+        origin: String? = null,
+        originId: String? = null
     ): JSONObject {
         return JSONObject().apply {
             put("id", id)
@@ -690,6 +890,12 @@ class MainActivity : AppCompatActivity() {
             put("time", time)
             put("enabled", enabled)
             put("updated_at", updatedAt)
+            put("kind", kind)
+            // Preserve provenance so a hand-edit of an ontoplano-derived alarm
+            // is still recognised as that occurrence on the next schedule sync,
+            // instead of being tombstoned and re-added.
+            origin?.let { put("origin", it) }
+            originId?.let { put("origin_id", it) }
             when (type) {
                 "date" -> put("date", date)
                 "next" -> put("type", "next")
@@ -697,6 +903,19 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    /** Spinner for the hard/soft choice, shared by the add and edit dialogs. */
+    private fun buildKindSpinner(selected: String): Spinner = Spinner(this).apply {
+        adapter = ArrayAdapter(
+            this@MainActivity,
+            android.R.layout.simple_spinner_dropdown_item,
+            listOf("Hard — must step on the scale", "Soft — tap to dismiss")
+        )
+        setSelection(if (selected == AlarmSchedule.KIND_SOFT) 1 else 0)
+    }
+
+    private fun Spinner.selectedKind(): String =
+        if (selectedItemPosition == 1) AlarmSchedule.KIND_SOFT else AlarmSchedule.KIND_HARD
 
     private fun selectedWeekdays(dayCheckboxes: List<CheckBox>): List<String> {
         return dayCheckboxes.mapIndexedNotNull { index, checkBox ->

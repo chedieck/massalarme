@@ -1,9 +1,20 @@
 """
 Massalarme – Scale Alarm Manager
 
-PC daemon that monitors a Xiaomi BLE scale and controls an alarm
-on an Android phone via LAN HTTP. Reads configuration from
-XDG-compliant paths.
+PC daemon. Historically it owned everything: it watched the Xiaomi BLE scale,
+scheduled the alarms, and drove the Android phone over LAN HTTP.
+
+The phone now owns sensing and ringing (`alarm_owner: phone`, the default). This
+daemon's job is to be the home-network half of the system:
+
+  * serve the alarm schedule and merge edits from the phone (HTTP + WebSocket),
+  * ingest weigh-ins the phone reports (`POST /readings`),
+  * publish them to ontoplano.
+
+The legacy PC-owned path is still here and still works -- set
+`alarm_owner: pc` in config.yaml to get the old behaviour back.
+
+Reads configuration from XDG-compliant paths.
 """
 
 import argparse
@@ -12,12 +23,13 @@ import logging
 import logging.handlers
 import os
 import secrets
+import socket
 import sqlite3
 import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -28,6 +40,20 @@ import aiohttp as aiohttp_client
 import yaml
 from aiohttp import web
 from bleak import BleakScanner
+
+import ontoplano
+import schedule_sync
+from store import (
+    SOURCE_PC,
+    SOURCE_PHONE,
+    Measurement,
+    WeighInStore,
+    make_external_id,
+    parse_timestamp,
+    sessionise,
+    utc_iso,
+)
+from sync import SyncWorker
 
 # ---------------------------------------------------------------------------
 # XDG paths
@@ -97,7 +123,35 @@ _DEFAULT_CONFIG = {
     "retry_fast_interval": 10,
     "retry_interval": 120,
     "max_trigger_attempts": 5,
+    # Who schedules alarms and listens to the scale.
+    #   "phone" – the app does both; the PC serves data and publishes (default)
+    #   "pc"    – legacy: this daemon scans BLE and drives the phone
+    "alarm_owner": "phone",
+    # Advertisements closer together than this are one trip to the scale.
+    "weigh_in_gap_seconds": 90,
+    # Outbound publishing to ontoplano. The token lives in a separate 0600 file
+    # (see --set-token), never here.
+    "ontoplano": {
+        "enabled": False,
+        "base_url": "",
+        "timeout_seconds": 15,
+        "batch_size": 500,
+        # Derive alarms from the ontoplano planner. Which occurrences become
+        # alarms, and whether they are hard or soft, is decided here — ontoplano
+        # knows nothing about alarms and should not.
+        "schedule": {
+            "enabled": False,
+            "days": 7,
+            "poll_minutes": 30,
+            "rules": [
+                {"match": {"title": "(?i)wake up|acordar"}, "kind": "hard"},
+            ],
+        },
+    },
 }
+
+ALARM_OWNER_PHONE = "phone"
+ALARM_OWNER_PC = "pc"
 
 
 # =====================================================================
@@ -268,29 +322,76 @@ def load_config() -> dict:
     # Auto-generate secret on first run
     if not cfg.get("shared_secret"):
         _generate_secret(cfg)
-        _show_secret_qr(cfg["shared_secret"])
+        _show_secret_qr(cfg["shared_secret"], cfg)
 
     return cfg
 
 
-def _show_secret_qr(secret: str) -> None:
-    """Print a QR code of the shared secret to the terminal."""
+def _local_ip(cfg: dict) -> str:
+    """Best guess at this machine's LAN address.
+
+    Opens a UDP socket towards the configured subnet -- no packet is sent, but
+    the kernel picks the interface it would route through, which is the address
+    the phone needs to reach us.
+    """
+    probe_target = cfg.get("lan_network", "192.168.1.0/24").split("/")[0]
+    probe_target = probe_target.rsplit(".", 1)[0] + ".1"
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect((probe_target, 9))
+        return sock.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        sock.close()
+
+
+def build_provisioning_payload(cfg: dict) -> dict:
+    """Everything the phone needs to become autonomous, in one QR code.
+
+    The phone owns the alarm and the scale now, so it needs the scale decoding
+    parameters as well as the shared secret -- and it needs to know where the PC
+    is, because the PC no longer initiates contact.
+    """
+    return {
+        "v": 2,
+        "secret": cfg.get("shared_secret", ""),
+        "pc_host": _local_ip(cfg),
+        "pc_port": int(cfg.get("pc_port", 8888)),
+        "scale": {
+            "name": cfg.get("scale_name", "MIBFS"),
+            "uuid_prefix": cfg.get("scale_uuid_prefix", "0000181b"),
+            "stable_flag": int(cfg.get("syncing_weight_flag", 0xA4)),
+            "min_weight_kg": float(cfg.get("min_weight_kg", 68)),
+            "session_gap_seconds": int(cfg.get("weigh_in_gap_seconds", 90)),
+        },
+    }
+
+
+def _show_secret_qr(secret: str, cfg: Optional[dict] = None) -> None:
+    """Print the provisioning QR code to the terminal."""
+    payload = build_provisioning_payload(cfg or {"shared_secret": secret})
+    encoded = json.dumps(payload, separators=(",", ":"))
+
     try:
         import qrcode  # type: ignore[import-untyped]
 
         qr = qrcode.QRCode(border=1)
-        qr.add_data(secret)
+        qr.add_data(encoded)
         qr.make(fit=True)
         qr.print_ascii(tty=sys.stdout.isatty())
         logger.info(
-            "Scan the QR code above with the Massalarme app to set the shared secret."
+            "Scan the QR code above with the Massalarme app. It carries the shared "
+            "secret, this PC's address (%s:%s) and the scale parameters.",
+            payload["pc_host"],
+            payload["pc_port"],
         )
     except ImportError:
         logger.warning(
             "qrcode package not installed \u2013 cannot display QR code. "
             "Install with: pip install qrcode[pil]"
         )
-        logger.info("Shared secret (copy manually): %s", secret)
+        logger.info("Provisioning payload (copy manually): %s", encoded)
 
 
 # =====================================================================
@@ -704,22 +805,22 @@ def get_relevant_data(data: bytes) -> str:
 # =====================================================================
 
 
-def init_db() -> None:
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS weights (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            weight_kg REAL NOT NULL,
-            impedance REAL NOT NULL,
-            alarm_name TEXT,
-            raw_value TEXT
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
+_store: Optional[WeighInStore] = None
+_sync_worker: Optional[SyncWorker] = None
+
+
+def get_store(cfg: Optional[dict] = None) -> WeighInStore:
+    """The weigh-in store, created on first use."""
+    global _store
+    if _store is None:
+        gap = int((cfg or {}).get("weigh_in_gap_seconds", 90))
+        _store = WeighInStore(DB_FILE, gap_seconds=gap)
+        _store.init()
+    return _store
+
+
+def init_db(cfg: Optional[dict] = None) -> None:
+    get_store(cfg)
     logger.info("Database ready: %s", DB_FILE)
 
 
@@ -738,20 +839,59 @@ def _get_last_weight() -> Optional[float]:
 def log_weight(
     weight_kg: float, impedance: float, raw_value: str, alarm_name: Optional[str] = None
 ) -> None:
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute(
-        "INSERT INTO weights (timestamp, weight_kg, impedance, alarm_name, raw_value) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (datetime.now().isoformat(), weight_kg, impedance, alarm_name, raw_value),
+    """Append one scale advertisement to the raw log.
+
+    Only the raw log: a single trip to the scale produces dozens of these, so
+    turning them into a weigh-in is a separate, deduplicating step.
+    """
+    get_store().record_raw(
+        Measurement(
+            captured_at=datetime.now(),
+            weight_kg=weight_kg,
+            impedance=None if impedance in (-1.0, 65533.0) else impedance,
+            raw_value=raw_value,
+            alarm_name=alarm_name,
+            source=SOURCE_PC,
+        )
     )
-    conn.commit()
-    conn.close()
     logger.info(
         "Logged: %.2fkg (raw=%s) | Alarm: %s",
         weight_kg,
         raw_value,
         alarm_name or "manual",
     )
+
+
+def store_weigh_ins(weigh_ins: List, cfg: Optional[dict] = None) -> Tuple[int, int]:
+    """Persist finished weigh-ins and wake the syncer. Returns (new, duplicate).
+
+    Note what this deliberately does *not* do: re-run sessionisation. Whoever
+    produced these already decided where the session boundaries are. Re-deriving
+    them here would let a redelivered batch merge two weigh-ins that were
+    previously stored separately, minting a third id -- exactly the duplicate the
+    whole design exists to prevent.
+    """
+    store = get_store(cfg)
+    inserted, duplicates = store.upsert_weigh_ins(weigh_ins)
+    if inserted and _sync_worker is not None:
+        _sync_worker.notify()
+    if duplicates:
+        logger.debug("Ignored %d already-known weigh-in(s)", duplicates)
+    return (inserted, duplicates)
+
+
+def collapse_raw_log(cfg: Optional[dict] = None) -> int:
+    """Derive weigh-ins from the PC's own raw advertisement log.
+
+    Used by the legacy `alarm_owner: pc` path, where the BLE callback writes raw
+    rows and has no notion of when a trip to the scale ended. Deterministic and
+    idempotent, so it is safe to call on a timer.
+    """
+    store = get_store(cfg)
+    inserted, _ = store.backfill_from_raw_log()
+    if inserted and _sync_worker is not None:
+        _sync_worker.notify()
+    return inserted
 
 
 # =====================================================================
@@ -1091,6 +1231,137 @@ async def _handle_stop_alarm(request: web.Request) -> web.Response:
     return web.Response(text="Alarm stopped via failsafe")
 
 
+def _parse_reported_reading(entry: dict) -> "WeighIn":
+    """Turn one JSON reading from the phone into a WeighIn, or raise ValueError.
+
+    The `external_id` is recomputed from the reading's own content rather than
+    trusted. Both sides run the same pure function, so a well-behaved phone
+    always agrees; a buggy one cannot poison the id space.
+    """
+    from store import WeighIn  # local import keeps the module header tidy
+
+    captured_raw = entry.get("captured_at") or entry.get("at")
+    if not captured_raw:
+        raise ValueError("missing captured_at")
+    captured_at = parse_timestamp(str(captured_raw))
+
+    if "weight_kg" not in entry and "value" not in entry:
+        raise ValueError("missing weight_kg")
+    weight_kg = float(entry.get("weight_kg", entry.get("value")))
+    if not (0 < weight_kg < 500):
+        raise ValueError(f"implausible weight {weight_kg}")
+
+    impedance_raw = entry.get("impedance")
+    impedance = None
+    if impedance_raw is not None:
+        impedance = float(impedance_raw)
+        if impedance in (-1.0, 65533.0):
+            impedance = None
+
+    raw_value = entry.get("raw_value") or None
+    external_id = make_external_id(captured_at, raw_value, weight_kg)
+
+    claimed = entry.get("external_id")
+    if claimed and claimed != external_id:
+        logger.warning(
+            "Phone reported external_id %s but content derives %s -- using derived",
+            claimed,
+            external_id,
+        )
+
+    return WeighIn(
+        external_id=external_id,
+        captured_at=captured_at,
+        weight_kg=weight_kg,
+        impedance=impedance,
+        raw_value=raw_value,
+        alarm_name=entry.get("alarm_name") or None,
+        source=SOURCE_PHONE,
+        measurement_count=int(entry.get("measurements", 1) or 1),
+    )
+
+
+async def _handle_readings(request: web.Request) -> web.Response:
+    """POST /readings?key=<secret> — the phone reports finished weigh-ins.
+
+    Mirrors the ontoplano contract on purpose: batched, idempotent, partial
+    success. The phone's uploader and this daemon's producer then share the same
+    retry semantics, and a duplicate is success on both hops.
+    """
+    secret = _current_cfg.get("shared_secret", "")
+    key = request.query.get("key", "")
+    if not secret or key != secret:
+        return web.Response(status=403, text="Invalid key")
+
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "malformed JSON"}, status=400)
+
+    entries = body.get("readings")
+    if not isinstance(entries, list):
+        return web.json_response({"error": "expected a 'readings' array"}, status=400)
+    if len(entries) > 500:
+        return web.json_response({"error": "at most 500 readings per request"}, status=400)
+
+    parsed = []
+    rejected = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            rejected.append({"external_id": None, "reason": "not an object"})
+            continue
+        try:
+            parsed.append(_parse_reported_reading(entry))
+        except (ValueError, TypeError) as exc:
+            # Malformed readings are dropped, never retried -- they will never
+            # become valid, and the phone needs a definitive answer to stop
+            # resending them.
+            rejected.append(
+                {"external_id": entry.get("external_id"), "reason": str(exc)}
+            )
+
+    inserted, duplicates = store_weigh_ins(parsed, _current_cfg)
+
+    peer = request.remote or "phone"
+    logger.info(
+        "Readings from %s: %d new, %d duplicate, %d rejected",
+        peer,
+        inserted,
+        duplicates,
+        len(rejected),
+    )
+
+    if inserted:
+        newest = max(parsed, key=lambda w: w.captured_at)
+        await _broadcast_weight(newest.weight_kg)
+        _notify_send(
+            "Massalarme – weigh-in received",
+            f"{newest.weight_kg:.1f} kg from the phone",
+            urgency="low",
+            timeout_ms=5000,
+        )
+
+    return web.json_response(
+        {"accepted": inserted, "duplicates": duplicates, "rejected": rejected}
+    )
+
+
+async def _handle_sync_status(request: web.Request) -> web.Response:
+    """GET /sync-status?key=<secret> — so the phone can show whether the whole
+    chain is actually working. Silent sync failure is the default failure mode
+    of an integration like this."""
+    secret = _current_cfg.get("shared_secret", "")
+    if not secret or request.query.get("key", "") != secret:
+        return web.Response(status=403, text="Invalid key")
+
+    status = get_store(_current_cfg).status()
+    status["ontoplano_enabled"] = bool(
+        (_current_cfg.get("ontoplano") or {}).get("enabled", False)
+    )
+    status["halted"] = bool(_sync_worker is not None and _sync_worker.halted)
+    return web.json_response(status)
+
+
 async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
     secret = _current_cfg.get("shared_secret", "")
     key = request.query.get("key", "")
@@ -1195,6 +1466,8 @@ async def _start_pc_server(cfg: dict) -> None:
     app = web.Application()
     app.router.add_get("/alarms", _handle_alarms)
     app.router.add_get("/stop-alarm", _handle_stop_alarm)
+    app.router.add_get("/sync-status", _handle_sync_status)
+    app.router.add_post("/readings", _handle_readings)
     app.router.add_get("/ws", _handle_ws)
 
     runner = web.AppRunner(app, access_log=None)
@@ -1243,22 +1516,12 @@ async def _run_alarm_cycle(phone_ip: str, cfg: dict, alarm_name: str) -> None:
 # =====================================================================
 
 
-async def main_loop() -> None:
-    global _current_alarms, _current_cfg, _alarm_active, _phone_ip
+async def _pc_owned_alarm_loop(cfg: dict, alarms_config: Dict, last_mtime: float) -> None:
+    """Legacy path: this daemon schedules alarms, scans BLE and drives the phone.
 
-    cfg = load_config()
-    _current_cfg = cfg
-
-    logger.info("Massalarme daemon started.")
-    init_db()
-
-    alarms_config, last_mtime = load_alarms()
-    alarms_config = _prune_old_tombstones(alarms_config)
-    _save_alarms(alarms_config)
-    last_mtime = os.path.getmtime(ALARMS_FILE)
-    _current_alarms = alarms_config
-
-    await _start_pc_server(cfg)
+    Kept intact for `alarm_owner: pc`. The phone-owned path below is the default.
+    """
+    global _current_alarms, _alarm_active, _phone_ip
 
     await ensure_bluetooth_on()
 
@@ -1363,6 +1626,10 @@ async def main_loop() -> None:
             )
             await _run_alarm_cycle(phone_ip, cfg, alarm_name)
 
+            # The BLE callback only appends raw advertisements; this is where a
+            # finished trip to the scale becomes one uploadable weigh-in.
+            collapse_raw_log(cfg)
+
             cached_next_alarm = None
             await asyncio.sleep(1)
 
@@ -1372,8 +1639,317 @@ async def main_loop() -> None:
 
 
 # =====================================================================
+# Phone-owned mode (default)
+# =====================================================================
+
+
+async def _phone_owned_serve_loop(cfg: dict, alarms_config: Dict, last_mtime: float) -> None:
+    """Default path: the phone schedules alarms and listens to the scale.
+
+    This daemon keeps the schedule file in sync with the app and publishes what
+    the phone reports. No Bluetooth, no alarm triggering -- if the PC is asleep
+    the alarm still rings.
+    """
+    global _current_alarms
+
+    logger.info(
+        "Alarm ownership: phone. This daemon serves the schedule and publishes "
+        "weigh-ins; it will not scan BLE or trigger alarms."
+    )
+    log_upcoming_alarms(alarms_config, limit=8)
+
+    while True:
+        try:
+            new_config, new_mtime = load_alarms()
+            if new_mtime != last_mtime:
+                logger.info("alarms.json updated – reloading and broadcasting.")
+                new_config = _inject_tombstones_for_removed(alarms_config, new_config)
+                new_config = _prune_old_tombstones(new_config)
+                _save_alarms(new_config)
+                log_upcoming_alarms(new_config, limit=8)
+                alarms_config = new_config
+                _current_alarms = alarms_config
+                last_mtime = os.path.getmtime(ALARMS_FILE)
+                await broadcast_alarms(alarms_config)
+
+            await asyncio.sleep(2)
+        except Exception:
+            logger.exception("Unexpected error in serve loop")
+            await asyncio.sleep(5)
+
+
+async def main_loop() -> None:
+    global _current_alarms, _current_cfg, _sync_worker
+
+    cfg = load_config()
+    _current_cfg = cfg
+
+    logger.info("Massalarme daemon started.")
+    init_db(cfg)
+
+    alarms_config, last_mtime = load_alarms()
+    alarms_config = _prune_old_tombstones(alarms_config)
+    _save_alarms(alarms_config)
+    last_mtime = os.path.getmtime(ALARMS_FILE)
+    _current_alarms = alarms_config
+
+    await _start_pc_server(cfg)
+
+    sync_task = await _start_sync_worker(cfg)
+    schedule_task = await _start_schedule_sync(cfg)
+
+    stale_state = _read_alarm_state()
+    if stale_state:
+        stale_name = stale_state.get("alarm_name", "unknown")
+        logger.warning(
+            "Alarm '%s' was active before daemon restart – skipping stale alarm state",
+            stale_name,
+        )
+        _clear_alarm_state()
+
+    owner = str(cfg.get("alarm_owner", ALARM_OWNER_PHONE)).lower()
+    try:
+        if owner == ALARM_OWNER_PC:
+            await _pc_owned_alarm_loop(cfg, alarms_config, last_mtime)
+        else:
+            if owner != ALARM_OWNER_PHONE:
+                logger.warning(
+                    "Unknown alarm_owner %r – defaulting to %r", owner, ALARM_OWNER_PHONE
+                )
+            await _phone_owned_serve_loop(cfg, alarms_config, last_mtime)
+    finally:
+        for task in (sync_task, schedule_task):
+            if task is not None:
+                task.cancel()
+
+
+async def _schedule_sync_loop(cfg: dict) -> None:
+    """Poll the ontoplano planner and turn occurrences into alarms.
+
+    Failures here are never fatal: a planner that is unreachable just means the
+    schedule stops updating, and every alarm already on the phone still rings.
+    """
+    global _current_alarms
+
+    section = (cfg.get("ontoplano") or {}).get("schedule") or {}
+    op_config = ontoplano.config_from_dict(cfg, CONFIG_DIR)
+    if not op_config.usable:
+        logger.info("ontoplano schedule sync skipped: sync is not configured")
+        return
+
+    rules = schedule_sync.parse_rules(section.get("rules") or [])
+    if not rules:
+        logger.warning("ontoplano schedule sync enabled but no rules configured")
+        return
+
+    days = int(section.get("days", 7))
+    poll_seconds = max(60, int(section.get("poll_minutes", 30)) * 60)
+    client = ontoplano.build_client(op_config)
+
+    logger.info(
+        "ontoplano schedule sync every %d min over %d day(s), %d rule(s)",
+        poll_seconds // 60,
+        days,
+        len(rules),
+    )
+
+    try:
+        while True:
+            try:
+                schedule = await client.fetch_schedule(days=days)
+                now_ms = _now_ms()
+                derived = schedule_sync.build_alarms(schedule, rules, now_ms)
+
+                current, _ = load_alarms()
+                merged = schedule_sync.merge_into_schedule(
+                    current, derived, now_ms=now_ms, horizon_days=days
+                )
+
+                if merged != current:
+                    _save_alarms(merged)
+                    _current_alarms = merged
+                    logger.info(
+                        "ontoplano schedule applied: %d alarm(s) derived", len(derived)
+                    )
+                    await broadcast_alarms(merged)
+                else:
+                    logger.debug("ontoplano schedule unchanged")
+
+            except ontoplano.OntoplanoError as exc:
+                logger.warning("ontoplano schedule fetch failed: %s", exc)
+            except Exception:
+                logger.exception("Unexpected error in schedule sync")
+
+            await asyncio.sleep(poll_seconds)
+    finally:
+        await client.close()
+
+
+async def _start_schedule_sync(cfg: dict) -> Optional[asyncio.Task]:
+    section = (cfg.get("ontoplano") or {}).get("schedule") or {}
+    if not section.get("enabled", False):
+        return None
+    return asyncio.create_task(_schedule_sync_loop(cfg))
+
+
+async def _start_sync_worker(cfg: dict) -> Optional[asyncio.Task]:
+    """Start the ontoplano producer, if configured. Never fatal: massalarme must
+    work completely standalone with sync disabled."""
+    global _sync_worker
+
+    op_config = ontoplano.config_from_dict(cfg, CONFIG_DIR)
+    client = ontoplano.build_client(op_config)
+    _sync_worker = SyncWorker(
+        get_store(cfg),
+        client,
+        batch_size=op_config.batch_size,
+        enabled=op_config.usable,
+    )
+    if not op_config.usable:
+        return None
+
+    # Anything captured while sync was off or the daemon was down is still
+    # queued; the worker drains it on its first pass.
+    pending = get_store(cfg).pending_count()
+    if pending:
+        logger.info("%d weigh-in(s) queued for ontoplano", pending)
+
+    return asyncio.create_task(_sync_worker.run_forever())
+
+
+# =====================================================================
 # CLI
 # =====================================================================
+
+
+def _print_sync_status(cfg: dict) -> None:
+    op_config = ontoplano.config_from_dict(cfg, CONFIG_DIR)
+    status = get_store(cfg).status()
+
+    if not op_config.enabled:
+        state = "disabled"
+    elif not op_config.base_url:
+        state = "enabled but no base_url configured"
+    elif not op_config.token:
+        state = f"enabled but no token (run --set-token, or create {CONFIG_DIR / ontoplano.TOKEN_FILENAME})"
+    else:
+        state = f"enabled -> {op_config.base_url}"
+
+    print(f"ontoplano sync : {state}")
+    print(f"weigh-ins      : {status['total']} total")
+    print(f"  synced       : {status['synced']}")
+    print(f"  pending      : {status['pending']}")
+    print(f"  dropped      : {status['dropped']}")
+    print(f"last success   : {status['last_success'] or 'never'}")
+    if status["last_error"]:
+        print(f"last error     : {status['last_error']}")
+        print(f"  at           : {status['last_error_at']}")
+
+    latest = get_store(cfg).latest(limit=5)
+    if latest:
+        print("\nrecent weigh-ins:")
+        for weigh_in in latest:
+            print(
+                f"  {utc_iso(weigh_in.captured_at)}  {weigh_in.weight_kg:6.2f} kg  "
+                f"[{weigh_in.source}]  {weigh_in.alarm_name or '-'}"
+            )
+
+
+async def _run_sync_once(cfg: dict) -> int:
+    op_config = ontoplano.config_from_dict(cfg, CONFIG_DIR)
+    if not op_config.usable:
+        print("ontoplano sync is not configured. See --sync-status.")
+        return 1
+
+    client = ontoplano.build_client(op_config)
+    worker = SyncWorker(get_store(cfg), client, batch_size=op_config.batch_size)
+    try:
+        delivered = await worker.drain()
+    finally:
+        await client.close()
+
+    pending = get_store(cfg).pending_count()
+    print(f"Delivered {delivered} weigh-in(s). {pending} still pending.")
+    return 0 if pending == 0 else 2
+
+
+async def _check_ontoplano(cfg: dict) -> int:
+    """Confirm the token works and report what it can do."""
+    op_config = ontoplano.config_from_dict(cfg, CONFIG_DIR)
+    if not op_config.base_url:
+        print("No ontoplano base_url configured in config.yaml.")
+        return 1
+    if not op_config.token:
+        print(f"No token found. Run: massalarme --set-token <TOKEN>")
+        return 1
+
+    # Force the client on even when sync is disabled -- this is a setup check.
+    client = ontoplano.HttpOntoplanoClient(op_config)
+    try:
+        identity = await client.whoami()
+        scopes = identity.get("scopes", [])
+        print(f"Connected to {op_config.base_url}")
+        print(f"  user     : {identity.get('user_id')}")
+        print(f"  timezone : {identity.get('timezone')}")
+        print(f"  scopes   : {', '.join(scopes) or 'none'}")
+
+        missing = [s for s in ("streams:write",) if s not in scopes]
+        if missing:
+            print(f"\nMissing scope(s): {', '.join(missing)} — pushing readings will fail.")
+            return 2
+
+        schedule_enabled = ((cfg.get("ontoplano") or {}).get("schedule") or {}).get(
+            "enabled", False
+        )
+        if schedule_enabled and "schedule:read" not in scopes:
+            print("\nSchedule sync is enabled but the token lacks 'schedule:read'.")
+            return 2
+
+        print("\nToken looks good.")
+        return 0
+    except ontoplano.OntoplanoError as exc:
+        print(f"ontoplano check failed: {type(exc).__name__}: {exc}")
+        return 1
+    finally:
+        await client.close()
+
+
+async def _run_schedule_once(cfg: dict) -> int:
+    section = (cfg.get("ontoplano") or {}).get("schedule") or {}
+    op_config = ontoplano.config_from_dict(cfg, CONFIG_DIR)
+    if not op_config.base_url or not op_config.token:
+        print("ontoplano is not configured. See --check-ontoplano.")
+        return 1
+
+    rules = schedule_sync.parse_rules(section.get("rules") or [])
+    if not rules:
+        print("No schedule rules configured under ontoplano.schedule.rules.")
+        return 1
+
+    days = int(section.get("days", 7))
+    client = ontoplano.HttpOntoplanoClient(op_config)
+    try:
+        schedule = await client.fetch_schedule(days=days)
+    except ontoplano.OntoplanoError as exc:
+        print(f"Schedule fetch failed: {type(exc).__name__}: {exc}")
+        return 1
+    finally:
+        await client.close()
+
+    now_ms = _now_ms()
+    derived = schedule_sync.build_alarms(schedule, rules, now_ms)
+    current, _ = load_alarms()
+    merged = schedule_sync.merge_into_schedule(
+        current, derived, now_ms=now_ms, horizon_days=days
+    )
+    _save_alarms(merged)
+
+    print(f"Timezone   : {schedule.get('timezone')}")
+    print(f"Occurrences: {len(schedule.get('occurrences', []))}")
+    print(f"Alarms     : {len(derived)} derived")
+    for alarm in derived:
+        print(f"  {alarm['date']} {alarm['time']}  [{alarm['kind']}]  {alarm['name']}")
+    return 0
 
 
 def main() -> None:
@@ -1391,6 +1967,38 @@ def main() -> None:
         action="store_true",
         help="Show upcoming alarms and time until each, then exit.",
     )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Collapse the raw weight log into weigh-ins and queue the full "
+        "history for ontoplano. Safe to run repeatedly.",
+    )
+    parser.add_argument(
+        "--sync-status",
+        action="store_true",
+        help="Show ontoplano sync state: pending count, last success, last error.",
+    )
+    parser.add_argument(
+        "--set-token",
+        metavar="TOKEN",
+        help="Store the ontoplano API token in a 0600 file and exit. "
+        "Use '-' to read it from stdin.",
+    )
+    parser.add_argument(
+        "--sync-now",
+        action="store_true",
+        help="Drain the ontoplano queue once and exit.",
+    )
+    parser.add_argument(
+        "--check-ontoplano",
+        action="store_true",
+        help="Verify the ontoplano token and show which scopes it carries.",
+    )
+    parser.add_argument(
+        "--schedule-now",
+        action="store_true",
+        help="Pull the ontoplano planner once, apply derived alarms, and exit.",
+    )
     args = parser.parse_args()
 
     _setup_logging()
@@ -1401,7 +2009,7 @@ def main() -> None:
         if not secret:
             logger.error("No shared secret found in config.")
             sys.exit(1)
-        _show_secret_qr(secret)
+        _show_secret_qr(secret, cfg)
         sys.exit(0)
 
     if args.alarms:
@@ -1409,6 +2017,42 @@ def main() -> None:
         alarms_config, _ = load_alarms()
         print_alarms(alarms_config)
         sys.exit(0)
+
+    if args.set_token is not None:
+        token = sys.stdin.read().strip() if args.set_token == "-" else args.set_token
+        if not token:
+            logger.error("Empty token.")
+            sys.exit(1)
+        path = ontoplano.write_token(CONFIG_DIR, token)
+        # Never log the token itself.
+        print(f"Token stored at {path} (mode 0600).")
+        print("Enable sync with 'ontoplano: {enabled: true, base_url: ...}' in config.yaml.")
+        sys.exit(0)
+
+    if args.backfill:
+        cfg = load_config()
+        store = get_store(cfg)
+        inserted, duplicates = store.backfill_from_raw_log()
+        print(f"Backfill complete: {inserted} new weigh-in(s), {duplicates} already known.")
+        print(f"{store.pending_count()} weigh-in(s) queued for ontoplano.")
+        sys.exit(0)
+
+    if args.sync_status:
+        cfg = load_config()
+        _print_sync_status(cfg)
+        sys.exit(0)
+
+    if args.sync_now:
+        cfg = load_config()
+        sys.exit(asyncio.run(_run_sync_once(cfg)))
+
+    if args.check_ontoplano:
+        cfg = load_config()
+        sys.exit(asyncio.run(_check_ontoplano(cfg)))
+
+    if args.schedule_now:
+        cfg = load_config()
+        sys.exit(asyncio.run(_run_schedule_once(cfg)))
 
     try:
         asyncio.run(main_loop())

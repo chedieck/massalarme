@@ -41,3 +41,44 @@ max_trigger_attempts: 5
 # Shared secret for authenticating requests to the phone.
 # Auto-generated on first run. Scan the QR code with the phone app.
 shared_secret: ""
+
+# ── Who owns the alarm ────────────────────────────────────────────────
+# "phone" (default): the app schedules alarms and listens to the scale.
+#   This daemon serves the schedule and publishes weigh-ins. The alarm
+#   rings even when the PC is asleep.
+# "pc": legacy behaviour — this daemon scans BLE and drives the phone.
+alarm_owner: phone
+
+# Scale advertisements closer together than this are one trip to the scale.
+# The scale rebroadcasts a result many times and the reading drifts while you
+# settle, so they are collapsed into a single weigh-in.
+weigh_in_gap_seconds: 90
+
+# ── ontoplano ─────────────────────────────────────────────────────────
+# massalarme stays the source of truth; ontoplano gets a copy for charting.
+# Local data is never deleted because it was uploaded, and with sync off
+# massalarme works exactly as before.
+#
+# The API token is NOT stored here. Run `make set-token` — it goes in
+# ~/.config/massalarme/ontoplano_token with mode 0600.
+ontoplano:
+  enabled: false
+  base_url: ""          # e.g. https://app.ontoplano.com or http://192.168.1.10:1493
+  timeout_seconds: 15
+  batch_size: 500
+
+  # Derive alarms from the ontoplano planner. ontoplano reports *what is
+  # scheduled*; deciding which occurrences deserve an alarm, and whether it is
+  # hard or soft, is massalarme's business and lives here.
+  #
+  # First matching rule wins. Occurrences matching nothing get no alarm.
+  # Requires the token to carry the `schedule:read` scope.
+  schedule:
+    enabled: false
+    days: 7
+    poll_minutes: 30
+    rules:
+      - match: {title: "(?i)wake up|acordar"}
+        kind: hard      # only silenced by standing on the scale
+      # - match: {category: duty}
+      #   kind: soft    # dismissible with a button, softer ringtone

@@ -60,10 +60,15 @@
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <LinearLayout
+        <ScrollView
             android:id="@+id/settings_content"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
+            android:background="@color/bg_dark">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:orientation="vertical"
             android:padding="24dp"
             android:gravity="center_horizontal"
@@ -76,7 +81,17 @@
                 android:textSize="28sp"
                 android:textStyle="bold"
                 android:textColor="@color/secondary_accent"
-                android:layout_marginBottom="32dp" />
+                android:layout_marginBottom="24dp" />
+
+            <TextView
+                android:id="@+id/next_alarm_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="No upcoming alarms"
+                android:textSize="16sp"
+                android:gravity="center"
+                android:textColor="@color/secondary_accent"
+                android:layout_marginBottom="24dp" />
 
             <TextView
                 android:id="@+id/service_status"
@@ -132,9 +147,98 @@
                 android:layout_height="wrap_content"
                 android:text="Start on boot"
                 android:textSize="16sp"
+                android:textColor="@color/text_primary"
+                android:layout_marginBottom="24dp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider"
+                android:layout_marginBottom="24dp" />
+
+            <!-- Hard alarms only apply at home, where the scale is. -->
+            <TextView
+                android:id="@+id/home_wifi_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Home wifi: not set"
+                android:textSize="16sp"
+                android:gravity="center"
+                android:textColor="@color/text_muted"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/set_home_wifi"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Use current wifi as home"
+                android:backgroundTint="@color/primary_accent"
+                android:textColor="@color/text_primary"
+                android:layout_marginBottom="24dp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider"
+                android:layout_marginBottom="24dp" />
+
+            <TextView
+                android:id="@+id/permissions_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Permissions: checking…"
+                android:textSize="16sp"
+                android:gravity="center"
+                android:textColor="@color/text_muted"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/grant_permissions"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Grant permissions"
+                android:backgroundTint="@color/primary_accent"
+                android:textColor="@color/text_primary"
+                android:layout_marginBottom="24dp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider"
+                android:layout_marginBottom="24dp" />
+
+            <!-- Silent sync failure is the default failure mode of an
+                 integration like this, so it gets its own line. -->
+            <TextView
+                android:id="@+id/readings_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="No weigh-ins recorded yet"
+                android:textSize="15sp"
+                android:gravity="center"
+                android:textColor="@color/text_muted"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/upload_now"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Upload now"
+                android:backgroundTint="@color/primary_accent"
+                android:textColor="@color/text_primary"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/weigh_now"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Listen for scale"
+                android:backgroundTint="@color/primary_accent"
                 android:textColor="@color/text_primary" />
 
         </LinearLayout>
+
+        </ScrollView>
 
         <LinearLayout
             android:id="@+id/alarms_content"
