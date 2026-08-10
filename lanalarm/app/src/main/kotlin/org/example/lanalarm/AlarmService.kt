@@ -8,10 +8,12 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -143,7 +145,11 @@ class AlarmService : Service() {
         instance = this
         audioManager = getSystemService(AudioManager::class.java)
 
-        startForeground(NOTIFICATION_SERVICE_ID, buildServiceNotification())
+        // Media playback only, for now. The manifest also declares
+        // `connectedDevice` for BLE scanning, but that type may only be claimed
+        // while a Bluetooth permission is actually held — and on first launch it
+        // is not. Claiming it here would throw and take the whole app down.
+        enterForeground(ServiceForegroundType.MEDIA_ONLY)
 
         scaleScanner = ScaleScanner(this)
 
@@ -159,6 +165,53 @@ class AlarmService : Service() {
 
         // Anything captured while the PC was unreachable goes out now.
         uploadReadings()
+    }
+
+    // ─── Foreground service type ─────────────────────────────────────
+
+    private enum class ServiceForegroundType { MEDIA_ONLY, MEDIA_AND_DEVICE }
+
+    /**
+     * Go (or stay) foreground, claiming only the types we are currently entitled to.
+     *
+     * Android 14 validates foreground-service types at `startForeground()` time.
+     * The two-argument form claims *every* type declared in the manifest, so
+     * declaring `connectedDevice` there is enough to make the call throw
+     * `SecurityException` whenever no Bluetooth permission is granted — which is
+     * the state the app is in the first time it is ever opened. Passing the types
+     * explicitly keeps the BLE justification available without making the service
+     * impossible to create.
+     */
+    private fun enterForeground(type: ServiceForegroundType) {
+        val notification = buildServiceNotification()
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            // Types are neither accepted nor validated here.
+            startForeground(NOTIFICATION_SERVICE_ID, notification)
+            return
+        }
+
+        var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+        if (type == ServiceForegroundType.MEDIA_AND_DEVICE) {
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        }
+
+        try {
+            startForeground(NOTIFICATION_SERVICE_ID, notification, types)
+        } catch (e: Exception) {
+            // Never let a foreground-service technicality kill the alarm. Fall
+            // back to the plainest claim we know is allowed.
+            Log.e(TAG, "startForeground($types) failed: ${e.message}")
+            if (type != ServiceForegroundType.MEDIA_ONLY) {
+                runCatching {
+                    startForeground(
+                        NOTIFICATION_SERVICE_ID,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                    )
+                }
+            }
+        }
     }
 
     // ─── Scale + reading upload ──────────────────────────────────────
@@ -240,6 +293,11 @@ class AlarmService : Service() {
 
     fun startScaleScan(): Boolean {
         if (!scaleScanner.start(scaleListener)) return false
+
+        // Scanning has actually begun, which means the Bluetooth permission is
+        // held, which is exactly when we are allowed to claim this type.
+        enterForeground(ServiceForegroundType.MEDIA_AND_DEVICE)
+
         scanTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
         val timeout = Runnable {
             Log.i(TAG, "Scale scan timed out")
@@ -251,9 +309,13 @@ class AlarmService : Service() {
     }
 
     fun stopScaleScan() {
+        val wasScanning = scaleScanner.isScanning()
         scanTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
         scanTimeoutRunnable = null
         scaleScanner.stop()
+
+        // Give the type back once the justification for it is gone.
+        if (wasScanning) enterForeground(ServiceForegroundType.MEDIA_ONLY)
     }
 
     fun isScanningScale(): Boolean = scaleScanner.isScanning()
