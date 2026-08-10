@@ -84,19 +84,36 @@ object AlarmScheduler {
         }
     }
 
+    /** The headline: what rings next and how far away it is. */
     fun nextAlarmDescription(context: Context): String {
-        val alarms = AlarmSchedule.parse(
-            AppSettings.prefs(context).getString(AppSettings.KEY_ALARMS, null)
-        )
-        val next = AlarmSchedule.nextAlarm(alarms) ?: return "No upcoming alarms"
+        val next = nextAlarm(context) ?: return "No upcoming alarms"
         val (alarm, triggerAt) = next
+        return "${alarm.name} ${countdown(triggerAt)}"
+    }
+
+    /** The supporting line: when exactly, and what kind. */
+    fun nextAlarmDetail(context: Context): String {
+        val next = nextAlarm(context) ?: return ""
+        val (alarm, triggerAt) = next
+        val at = java.text.SimpleDateFormat("EEEE d MMM, HH:mm", java.util.Locale.getDefault())
+            .format(java.util.Date(triggerAt))
+        val kind = if (alarm.isHard) "hard — needs the scale" else "soft — one tap"
+        return "$at · $kind"
+    }
+
+    private fun nextAlarm(context: Context): Pair<AlarmSchedule.Alarm, Long>? =
+        AlarmSchedule.nextAlarm(
+            AlarmSchedule.parse(AppSettings.prefs(context).getString(AppSettings.KEY_ALARMS, null))
+        )
+
+    private fun countdown(triggerAt: Long): String {
         val minutes = (triggerAt - System.currentTimeMillis()) / 60_000
-        val readable = when {
+        return when {
+            minutes < 1 -> "now"
             minutes < 60 -> "in ${minutes}m"
             minutes < 1440 -> "in ${minutes / 60}h ${minutes % 60}m"
             else -> "in ${minutes / 1440}d ${(minutes % 1440) / 60}h"
         }
-        return "${alarm.name} (${alarm.kind}) $readable"
     }
 
     private fun canScheduleExact(alarmManager: AlarmManager): Boolean =

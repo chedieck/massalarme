@@ -53,6 +53,7 @@ class AlarmEditor(private val activity: AppCompatActivity) {
         val hardChip: TextView = view.findViewById(R.id.edit_kind_hard)
         val softChip: TextView = view.findViewById(R.id.edit_kind_soft)
         val kindSummary: TextView = view.findViewById(R.id.edit_kind_summary)
+        val kindInfo: android.widget.ImageView = view.findViewById(R.id.edit_kind_info)
 
         val parsed = existing?.let { AlarmSchedule.parseTime(it.time) }
         val draft = Draft(
@@ -88,10 +89,10 @@ class AlarmEditor(private val activity: AppCompatActivity) {
             hardChip.isSelected = draft.kind == AlarmSchedule.KIND_HARD
             softChip.isSelected = draft.kind == AlarmSchedule.KIND_SOFT
             kindSummary.text = if (draft.kind == AlarmSchedule.KIND_HARD) {
-                "Only stops once you stand on the scale. Away from your home wifi " +
-                    "it falls back to a button, since the scale is not there."
+                "Hard: only stops once you stand on the scale. Away from your home " +
+                    "wifi it falls back to a button, since the scale is not there."
             } else {
-                "Stops with one tap, and uses the gentler tone."
+                "Soft: stops with one tap, and uses the gentler tone."
             }
 
             repeatSummary.text = describe(draft)
@@ -123,6 +124,11 @@ class AlarmEditor(private val activity: AppCompatActivity) {
         }
 
         buildPresets(presetsRow, draft) { refresh() }
+
+        kindInfo.setOnClickListener {
+            kindSummary.visibility =
+                if (kindSummary.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        }
 
         hardChip.setOnClickListener { draft.kind = AlarmSchedule.KIND_HARD; refresh() }
         softChip.setOnClickListener { draft.kind = AlarmSchedule.KIND_SOFT; refresh() }

@@ -13,6 +13,7 @@ import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Spinner
@@ -53,8 +54,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var serviceToggle: Button
     private lateinit var scanSecretButton: Button
     private lateinit var bootToggle: Switch
-    private lateinit var tabSettings: TextView
-    private lateinit var tabAlarms: TextView
+    private lateinit var tabSettings: ImageView
+    private lateinit var tabAlarms: ImageView
     private lateinit var settingsContent: View
     private lateinit var alarmsContent: View
     private lateinit var alarmsList: LinearLayout
@@ -64,6 +65,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var alarmsAdd: Button
     private lateinit var wsStatus: TextView
     private lateinit var nextAlarmStatus: TextView
+    private lateinit var nextAlarmDetail: TextView
+    private lateinit var impedanceNote: TextView
     private lateinit var homeWifiStatus: TextView
     private lateinit var setHomeWifiButton: Button
     private lateinit var permissionsStatus: TextView
@@ -83,7 +86,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var scaleModeWeight: TextView
     private lateinit var scaleModeBodyFat: TextView
     private lateinit var scaleModeCaption: TextView
-    private lateinit var tabWeight: TextView
+    private lateinit var tabWeight: ImageView
     private lateinit var weightContent: View
     private lateinit var weightChart: WeightChartView
     private lateinit var weightLatest: TextView
@@ -166,6 +169,8 @@ class MainActivity : AppCompatActivity() {
         alarmsAdd = findViewById(R.id.alarms_add)
         wsStatus = findViewById(R.id.ws_status)
         nextAlarmStatus = findViewById(R.id.next_alarm_status)
+        nextAlarmDetail = findViewById(R.id.next_alarm_detail)
+        impedanceNote = findViewById(R.id.impedance_note)
         homeWifiStatus = findViewById(R.id.home_wifi_status)
         setHomeWifiButton = findViewById(R.id.set_home_wifi)
         permissionsStatus = findViewById(R.id.permissions_status)
@@ -448,6 +453,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateSensingStatus() {
         nextAlarmStatus.text = AlarmScheduler.nextAlarmDescription(this)
+        nextAlarmDetail.text = AlarmScheduler.nextAlarmDetail(this)
         renderScaleMode()
         renderHomeNetwork()
         renderPermissions()
@@ -510,6 +516,12 @@ class MainActivity : AppCompatActivity() {
             }
             if (pending > 0) append("\n$pending waiting to upload")
             if (!lastError.isNullOrBlank()) append("\n").append(lastError)
+        }
+
+        impedanceNote.text = if (AppSettings.requiresBodyFat(this)) {
+            "Body-fat mode records impedance in ohms (typically 300–800 Ω)."
+        } else {
+            "Weight mode records no impedance, so the Weight tab shows none."
         }
 
         weighNowButton.text =
@@ -628,9 +640,9 @@ class MainActivity : AppCompatActivity() {
         alarmsContent.visibility = if (tab == Tab.ALARMS) View.VISIBLE else View.GONE
         weightContent.visibility = if (tab == Tab.WEIGHT) View.VISIBLE else View.GONE
 
-        tabSettings.setTextColor(if (tab == Tab.SETTINGS) active else inactive)
-        tabAlarms.setTextColor(if (tab == Tab.ALARMS) active else inactive)
-        tabWeight.setTextColor(if (tab == Tab.WEIGHT) active else inactive)
+        tabSettings.setColorFilter(if (tab == Tab.SETTINGS) active else inactive)
+        tabAlarms.setColorFilter(if (tab == Tab.ALARMS) active else inactive)
+        tabWeight.setColorFilter(if (tab == Tab.WEIGHT) active else inactive)
 
         when (tab) {
             Tab.ALARMS -> renderAlarms()
@@ -719,14 +731,19 @@ class MainActivity : AppCompatActivity() {
         })
         row.addView(left)
 
-        // Impedance present means the body-fat reading actually completed.
-        entry.impedance?.let { ohms ->
-            row.addView(TextView(this).apply {
-                text = String.format(Locale.US, "%.0f Ω", ohms)
+        // Impedance present means the body-fat reading actually completed. It is
+        // raw electrical impedance in ohms, not a body-fat percentage — turning
+        // it into one needs height, age and sex, which massalarme does not hold.
+        row.addView(TextView(this).apply {
+            if (entry.impedance != null) {
+                text = String.format(Locale.US, "%.0f Ω", entry.impedance)
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.kind_hard))
+            } else {
+                text = "no Ω"
                 setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_muted))
-                textSize = 12f
-            })
-        }
+            }
+            textSize = 12f
+        })
 
         return row
     }
@@ -795,7 +812,13 @@ class MainActivity : AppCompatActivity() {
         time.text = alarm.time
         name.text = alarm.name
         days.text = alarm.describeRepeat()
-        kindBadge.text = if (alarm.isHard) "SCALE" else "SOFT"
+        kindBadge.text = if (alarm.isHard) "HARD" else "SOFT"
+        kindBadge.setTextColor(
+            ContextCompat.getColor(
+                this,
+                if (alarm.isHard) R.color.kind_hard else R.color.kind_soft
+            )
+        )
 
         // Disabled alarms stay legible but visibly inactive.
         row.alpha = if (alarm.enabled) 1f else 0.45f

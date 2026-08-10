@@ -264,3 +264,63 @@ def test_an_unknown_kind_falls_back_to_hard(monkeypatch):
     alarm_manager._apply_ontoplano_rule("wake", "nuclear")
 
     assert cfg["ontoplano"]["schedule"]["rules"][0]["kind"] == "hard"
+
+
+# ── First-run backfill ───────────────────────────────────────────────
+
+
+def test_a_raw_log_that_was_never_collapsed_is_backfilled_on_startup(tmp_path, monkeypatch):
+    """Otherwise the weigh-in history stays empty until someone happens to run
+    `make backfill`, and the app's Weight tab just looks broken."""
+    from store import Measurement, WeighInStore
+
+    db_path = tmp_path / "weights.db"
+    seed = WeighInStore(db_path)
+    seed.init()
+    for second in (0, 1, 2):
+        seed.record_raw(
+            Measurement(
+                captured_at=datetime(2026, 8, 9, 7, 12, second),
+                weight_kg=73.9,
+                raw_value="02a4b2070114161133fdffbc39",
+            )
+        )
+    assert seed.latest() == []          # raw rows only, no weigh-ins yet
+
+    monkeypatch.setattr(alarm_manager, "DB_FILE", db_path)
+    monkeypatch.setattr(alarm_manager, "_store", None)
+
+    alarm_manager.init_db({})
+
+    assert len(alarm_manager.get_store().latest()) == 1
+
+
+def test_startup_backfill_does_not_run_when_weigh_ins_already_exist(tmp_path, monkeypatch):
+    from store import WeighInStore
+
+    db_path = tmp_path / "weights.db"
+    store = WeighInStore(db_path)
+    store.init()
+    store.upsert_weigh_ins([make_weigh_in_for_backfill()])
+    store.mark_synced(["already-here"])
+
+    monkeypatch.setattr(alarm_manager, "DB_FILE", db_path)
+    monkeypatch.setattr(alarm_manager, "_store", None)
+
+    alarm_manager.init_db({})
+
+    assert len(alarm_manager.get_store().latest()) == 1
+
+
+def make_weigh_in_for_backfill():
+    from store import WeighIn
+
+    return WeighIn(
+        external_id="already-here",
+        captured_at=datetime(2026, 8, 9, 7, 0, 0, tzinfo=timezone.utc),
+        weight_kg=70.0,
+        impedance=None,
+        raw_value=None,
+        alarm_name=None,
+        source="pc",
+    )

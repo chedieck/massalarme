@@ -92,7 +92,7 @@ object AlarmSchedule {
 
         /** Human summary of when it repeats, for the list and the editor. */
         fun describeRepeat(): String = when {
-            date != null -> date
+            date != null -> weekdayOf(date)?.let { "$it $date" } ?: date
             days.isEmpty() -> "Once"
             days.size == 7 -> "Every day"
             days.size == 5 && WEEKDAYS.take(5).all { it in days } -> "Weekdays"
@@ -197,6 +197,18 @@ object AlarmSchedule {
             )
 
     // ─── Occurrence maths ────────────────────────────────────────────
+
+    /** "Tue" for a "DD-MM-YYYY" date, or null if it will not parse. */
+    fun weekdayOf(date: String): String? {
+        val parts = date.split("-")
+        if (parts.size != 3) return null
+        val day = parts[0].toIntOrNull() ?: return null
+        val month = parts[1].toIntOrNull() ?: return null
+        val year = parts[2].toIntOrNull() ?: return null
+        val calendar = Calendar.getInstance().apply { set(year, month - 1, day) }
+        val index = (calendar.get(Calendar.DAY_OF_WEEK) + 5) % 7   // Monday = 0
+        return WEEKDAY_LABELS.getOrNull(index)
+    }
 
     /** Parses "HH:MM" or "HH:MM:SS". Returns null when malformed. */
     fun parseTime(time: String): Triple<Int, Int, Int>? {

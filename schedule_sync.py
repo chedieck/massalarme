@@ -26,11 +26,12 @@ duplicates, and hand-made alarms are never touched.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("massalarme.schedule")
 
@@ -140,18 +141,94 @@ def occurrence_to_alarm(occurrence: dict, kind: str, now_ms: int) -> Optional[di
     }
 
 
+WEEKDAYS = [
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+]
+
+
+def _weekly_alarm_id(title: str, time_text: str) -> str:
+    digest = hashlib.sha1(f"{title.lower()}|{time_text}".encode("utf-8")).hexdigest()[:8]
+    return f"op-w-{digest}"
+
+
 def build_alarms(schedule: dict, rules: List[Rule], now_ms: int) -> List[dict]:
-    """Map a whole `/schedule/upcoming` response into alarms."""
-    alarms: List[dict] = []
+    """Map a whole `/schedule/upcoming` response into alarms.
+
+    The same activity repeated across several days -- which is what ontoplano's
+    grid editor produces -- arrives as one occurrence per day. Emitting a dated
+    alarm for each turns "gym at 07:00 on Mon/Wed/Fri" into three separate
+    single-day alarms, which is not what the user set up and is miserable to
+    manage.
+
+    So occurrences sharing a title, a time and a kind are collapsed into one
+    weekly alarm carrying all their weekdays. A title that genuinely happens once
+    in the window stays a dated alarm.
+    """
+    matched: List[Tuple[dict, str, datetime]] = []
     for occurrence in schedule.get("occurrences", []) or []:
         if not isinstance(occurrence, dict):
             continue
         kind = classify(occurrence, rules)
         if kind is None:
             continue
-        alarm = occurrence_to_alarm(occurrence, kind, now_ms)
-        if alarm:
-            alarms.append(alarm)
+        at_local = occurrence.get("at_local")
+        if not at_local:
+            continue
+        try:
+            moment = datetime.fromisoformat(str(at_local))
+        except ValueError:
+            logger.warning("Skipping occurrence with unparseable at_local %r", at_local)
+            continue
+        matched.append((occurrence, kind, moment))
+
+    # Group by what makes two occurrences "the same activity".
+    groups: Dict[Tuple[str, str, str], List[Tuple[dict, str, datetime]]] = {}
+    for occurrence, kind, moment in matched:
+        key = (
+            str(occurrence.get("title") or "ontoplano").lower(),
+            moment.strftime("%H:%M"),
+            kind,
+        )
+        groups.setdefault(key, []).append((occurrence, kind, moment))
+
+    alarms: List[dict] = []
+    for (_, time_text, kind), members in groups.items():
+        weekdays = sorted(
+            {WEEKDAYS[m[2].weekday()] for m in members},
+            key=WEEKDAYS.index,
+        )
+        title = str(members[0][0].get("title") or "ontoplano")
+
+        if len(weekdays) < 2:
+            # A one-off keeps its exact date; a weekly alarm would fire again
+            # next week for something that only happens once.
+            alarm = occurrence_to_alarm(members[0][0], kind, now_ms)
+            if alarm:
+                alarms.append(alarm)
+            continue
+
+        alarms.append(
+            {
+                "id": _weekly_alarm_id(title, time_text),
+                "name": title,
+                "time": time_text,
+                "days": weekdays,
+                "enabled": True,
+                "kind": kind,
+                "origin": ORIGIN_ONTOPLANO,
+                # Every occurrence this alarm stands for, so a later sync can
+                # tell whether the set has changed.
+                "origin_id": ",".join(sorted(str(m[0].get("id", "")) for m in members)),
+                "updated_at": now_ms,
+            }
+        )
+
     return alarms
 
 

@@ -297,3 +297,88 @@ def test_title_matching_ignores_case_without_needing_a_flag():
     assert classify(occurrence(title="Acordar"), rules) == "hard"
     assert classify(occurrence(title="ACORDAR CEDO"), rules) == "hard"
     assert classify(occurrence(title="Nao acordar"), rules) is None  # ^ still anchors
+
+
+# ── Repeated activities ──────────────────────────────────────────────
+#
+# ontoplano's grid editor duplicates an activity across days, which arrives as
+# one occurrence per day. Emitting a dated alarm for each turned one habit into
+# several unrelated single-day alarms.
+
+
+def gym(slot: int, day: int, time: str = "07:00", title: str = "Gym") -> dict:
+    return occurrence(
+        id=f"slot:{slot}", title=title, at_local=f"2026-08-{day:02d}T{time}:00"
+    )
+
+
+GYM_RULES = parse_rules([{"match": {"title": "gym"}, "kind": "hard"}])
+
+
+def test_an_activity_repeated_across_days_becomes_one_weekly_alarm():
+    # 10, 12 and 14 August 2026 are Monday, Wednesday and Friday.
+    schedule = {"occurrences": [gym(1, 10), gym(2, 12), gym(3, 14)]}
+
+    alarms = build_alarms(schedule, GYM_RULES, NOW_MS)
+
+    assert len(alarms) == 1
+    assert alarms[0]["days"] == ["monday", "wednesday", "friday"]
+    assert alarms[0]["time"] == "07:00"
+    assert "date" not in alarms[0]
+
+
+def test_a_one_off_activity_keeps_its_date():
+    alarms = build_alarms({"occurrences": [gym(9, 11)]}, GYM_RULES, NOW_MS)
+
+    assert len(alarms) == 1
+    assert alarms[0]["date"] == "11-08-2026"
+    assert "days" not in alarms[0]
+
+
+def test_the_same_activity_at_different_times_stays_separate():
+    """07:00 gym and 19:00 gym are two different habits."""
+    schedule = {
+        "occurrences": [gym(1, 10), gym(2, 12), gym(3, 10, "19:00"), gym(4, 12, "19:00")]
+    }
+
+    alarms = build_alarms(schedule, GYM_RULES, NOW_MS)
+
+    assert sorted(a["time"] for a in alarms) == ["07:00", "19:00"]
+    assert all(a["days"] == ["monday", "wednesday"] for a in alarms)
+
+
+def test_different_activities_at_the_same_time_stay_separate():
+    rules = parse_rules([{"match": {"title": "gym|swim"}, "kind": "hard"}])
+    schedule = {
+        "occurrences": [
+            gym(1, 10), gym(2, 12),
+            gym(3, 10, title="Swim"), gym(4, 12, title="Swim"),
+        ]
+    }
+
+    alarms = build_alarms(schedule, rules, NOW_MS)
+
+    assert sorted(a["name"] for a in alarms) == ["Gym", "Swim"]
+
+
+def test_the_weekly_id_is_stable_across_syncs():
+    """Otherwise every sync would tombstone the alarm and add a new one."""
+    schedule = {"occurrences": [gym(1, 10), gym(2, 12)]}
+
+    first = build_alarms(schedule, GYM_RULES, NOW_MS)
+    # Same activity next week: different occurrence ids, same habit.
+    later = build_alarms(
+        {"occurrences": [gym(77, 17), gym(78, 19)]}, GYM_RULES, NOW_MS + 604_800_000
+    )
+
+    assert first[0]["id"] == later[0]["id"]
+
+
+def test_a_repeated_activity_resyncs_without_duplicating():
+    schedule = {"occurrences": [gym(1, 10), gym(2, 12)]}
+    derived = build_alarms(schedule, GYM_RULES, NOW_MS)
+
+    once = merge_into_schedule({"version": 2, "alarms": []}, derived, now_ms=NOW_MS, horizon_days=7)
+    twice = merge_into_schedule(once, derived, now_ms=NOW_MS, horizon_days=7)
+
+    assert len([a for a in twice["alarms"] if not a.get("deleted")]) == 1

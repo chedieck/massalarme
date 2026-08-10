@@ -897,8 +897,20 @@ def get_store(cfg: Optional[dict] = None) -> WeighInStore:
 
 
 def init_db(cfg: Optional[dict] = None) -> None:
-    get_store(cfg)
+    store = get_store(cfg)
     logger.info("Database ready: %s", DB_FILE)
+
+    # Collapse the raw log the first time we see one that has never been
+    # sessionised. Without this the weigh-in history stays empty until someone
+    # happens to run `make backfill`, which is not a step anyone should have to
+    # know about — and it silently makes the app's Weight tab look broken.
+    try:
+        if store.pending_count() == 0 and not store.latest(limit=1):
+            inserted, _ = store.backfill_from_raw_log()
+            if inserted:
+                logger.info("First run: collapsed the raw log into %d weigh-in(s)", inserted)
+    except Exception:
+        logger.exception("Initial backfill failed; continuing without it")
 
 
 def _get_last_weight() -> Optional[float]:

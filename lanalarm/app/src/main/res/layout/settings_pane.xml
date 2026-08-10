@@ -21,6 +21,25 @@
         android:orientation="vertical"
         android:padding="16dp">
 
+        <!-- ── Next alarm ──────────────────────────────────────────── -->
+        <LinearLayout style="@style/SettingsCard">
+
+            <TextView style="@style/SettingsHeading" android:text="NEXT ALARM" />
+
+            <TextView
+                android:id="@+id/next_alarm_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="No upcoming alarms"
+                android:textColor="@color/secondary_accent"
+                android:textSize="20sp" />
+
+            <TextView
+                android:id="@+id/next_alarm_detail"
+                style="@style/SettingsCaption"
+                android:text="" />
+        </LinearLayout>
+
         <!-- ── Service ─────────────────────────────────────────────── -->
         <LinearLayout style="@style/SettingsCard">
 
@@ -30,11 +49,6 @@
                 android:id="@+id/service_status"
                 style="@style/SettingsValue"
                 android:text="Unknown" />
-
-            <TextView
-                android:id="@+id/next_alarm_status"
-                style="@style/SettingsCaption"
-                android:text="No upcoming alarms" />
 
             <Button
                 android:id="@+id/service_toggle"
@@ -113,12 +127,14 @@
                 <TextView
                     android:id="@+id/ontoplano_kind_hard"
                     style="@style/SettingsSegment"
-                    android:text="Scale" />
+                    android:background="@drawable/chip_hard"
+                    android:text="Hard" />
 
                 <TextView
                     android:id="@+id/ontoplano_kind_soft"
                     style="@style/SettingsSegment"
-                    android:text="A button"
+                    android:background="@drawable/chip_soft"
+                    android:text="Soft"
                     android:layout_marginStart="8dp" />
             </LinearLayout>
 
@@ -171,6 +187,11 @@
                 style="@style/SettingsCaption"
                 android:text="No weigh-ins recorded yet"
                 android:layout_marginTop="14dp" />
+
+            <TextView
+                android:id="@+id/impedance_note"
+                style="@style/SettingsCaption"
+                android:text="" />
 
             <LinearLayout
                 android:layout_width="match_parent"
