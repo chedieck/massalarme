@@ -1,6 +1,7 @@
 package org.example
 
 import org.example.lanalarm.AlarmSchedule
+import org.example.lanalarm.Provisioning
 import org.example.lanalarm.ScaleCodec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -232,5 +233,93 @@ class AlarmScheduleTest {
     @Test
     fun `an empty schedule yields nothing`() {
         assertNull(AlarmSchedule.nextAlarm(emptyList(), mondayMorning()))
+    }
+}
+
+/**
+ * Pairing payload parsing.
+ *
+ * The strings below are literally what `alarm_manager.encode_provisioning`
+ * emits. If the two ever disagree, `make secret` produces a code the app cannot
+ * act on — which is exactly how pairing broke once.
+ */
+class ProvisioningTest {
+
+    companion object {
+        private const val SECRET =
+            "0d0f6d6f3a893d52d1275da38087d5f3d359e2d36800c0eaf502edbdc3fff710"
+    }
+
+    @Test
+    fun `parses the compact payload the PC emits`() {
+        val payload = Provisioning.parse(
+            "MA2:${SECRET.uppercase()}:192.168.1.5:8888:164:68:90"
+        )!!
+
+        // Stored lowercase: the PC uppercases only to stay in QR alphanumeric
+        // mode, but the secret it compares against is lowercase hex.
+        assertEquals(SECRET, payload.secret)
+        assertEquals("192.168.1.5", payload.pcHost)
+        assertEquals(8888, payload.pcPort)
+        assertEquals(164, payload.stableFlag)
+        assertEquals(68f, payload.minWeightKg!!, 0.001f)
+        assertEquals(90, payload.sessionGapSeconds)
+    }
+
+    @Test
+    fun `parses a fractional minimum weight`() {
+        val payload = Provisioning.parse("MA2:${SECRET.uppercase()}:host:8888:164:67.5:90")!!
+        assertEquals(67.5f, payload.minWeightKg!!, 0.001f)
+    }
+
+    @Test
+    fun `a truncated payload still yields the secret`() {
+        val payload = Provisioning.parse("MA2:${SECRET.uppercase()}")!!
+        assertEquals(SECRET, payload.secret)
+        assertNull(payload.pcHost)
+        assertNull(payload.pcPort)
+    }
+
+    @Test
+    fun `still accepts a bare hex secret from an older PC`() {
+        val payload = Provisioning.parse(SECRET)!!
+        assertEquals(SECRET, payload.secret)
+        assertNull(payload.pcHost)
+    }
+
+    @Test
+    fun `still accepts the earlier JSON payload`() {
+        val payload = Provisioning.parse(
+            """{"v":2,"secret":"$SECRET","pc_host":"10.0.0.2","pc_port":9999,""" +
+                """"scale":{"stable_flag":166,"min_weight_kg":70.0,"session_gap_seconds":60}}"""
+        )!!
+
+        assertEquals(SECRET, payload.secret)
+        assertEquals("10.0.0.2", payload.pcHost)
+        assertEquals(9999, payload.pcPort)
+        assertEquals(166, payload.stableFlag)
+        assertEquals(60, payload.sessionGapSeconds)
+    }
+
+    @Test
+    fun `rejects text that is not a pairing payload`() {
+        assertNull(Provisioning.parse(null))
+        assertNull(Provisioning.parse(""))
+        assertNull(Provisioning.parse("https://example.com"))
+        assertNull(Provisioning.parse("MA2:not-a-secret:host:8888"))
+        assertNull(Provisioning.parse("{\"secret\":\"too-short\"}"))
+    }
+
+    @Test
+    fun `nonsense field values are ignored rather than stored`() {
+        val payload = Provisioning.parse(
+            "MA2:${SECRET.uppercase()}:192.168.1.5:99999:999:-4:0"
+        )!!
+
+        assertEquals(SECRET, payload.secret)
+        assertNull(payload.pcPort)           // out of range
+        assertNull(payload.stableFlag)       // not a byte
+        assertNull(payload.minWeightKg)      // negative
+        assertNull(payload.sessionGapSeconds)
     }
 }

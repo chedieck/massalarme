@@ -3,7 +3,6 @@ package org.example.lanalarm
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
-import org.json.JSONObject
 
 /**
  * Every persisted setting in one place.
@@ -93,57 +92,26 @@ object AppSettings {
     }
 
     /**
-     * Apply a scanned provisioning payload.
-     *
-     * Accepts both shapes: the v2 JSON object produced by `make secret`, and a
-     * bare 64-char hex secret from an older PC that only knew how to share that.
-     * Returns false if the text is neither.
+     * Apply a scanned pairing payload. See [Provisioning] for the accepted
+     * shapes. Returns false if the text is none of them.
      */
     fun applyProvisioning(context: Context, scanned: String): Boolean {
-        val text = scanned.trim()
-        if (text.isEmpty()) return false
+        val payload = Provisioning.parse(scanned)
+        if (payload == null) {
+            Log.w(TAG, "Scanned text is not a recognised pairing payload")
+            return false
+        }
 
         val editor = prefs(context).edit()
-
-        val json = runCatching { JSONObject(text) }.getOrNull()
-        if (json == null) {
-            // Legacy QR: the secret and nothing else.
-            if (!text.matches(Regex("[0-9a-fA-F]{32,}"))) {
-                Log.w(TAG, "Scanned text is neither JSON nor a hex secret")
-                return false
-            }
-            editor.putString(KEY_SECRET, text).apply()
-            Log.i(TAG, "Applied legacy secret-only provisioning")
-            return true
-        }
-
-        val secret = json.optString("secret").takeIf { it.isNotBlank() } ?: return false
-        editor.putString(KEY_SECRET, secret)
-
-        json.optString("pc_host").takeIf { it.isNotBlank() }?.let {
-            editor.putString(KEY_PC_IP, it)
-        }
-        json.optInt("pc_port", 0).takeIf { it > 0 }?.let {
-            editor.putInt(KEY_PC_PORT, it)
-        }
-
-        json.optJSONObject("scale")?.let { scale ->
-            scale.optString("name").takeIf { it.isNotBlank() }?.let {
-                editor.putString(KEY_SCALE_NAME, it)
-            }
-            scale.optInt("stable_flag", -1).takeIf { it >= 0 }?.let {
-                editor.putInt(KEY_SCALE_STABLE_FLAG, it)
-            }
-            scale.optDouble("min_weight_kg", -1.0).takeIf { it > 0 }?.let {
-                editor.putFloat(KEY_SCALE_MIN_WEIGHT, it.toFloat())
-            }
-            scale.optInt("session_gap_seconds", 0).takeIf { it > 0 }?.let {
-                editor.putInt(KEY_SCALE_SESSION_GAP, it)
-            }
-        }
-
+        editor.putString(KEY_SECRET, payload.secret)
+        payload.pcHost?.let { editor.putString(KEY_PC_IP, it) }
+        payload.pcPort?.let { editor.putInt(KEY_PC_PORT, it) }
+        payload.stableFlag?.let { editor.putInt(KEY_SCALE_STABLE_FLAG, it) }
+        payload.minWeightKg?.let { editor.putFloat(KEY_SCALE_MIN_WEIGHT, it) }
+        payload.sessionGapSeconds?.let { editor.putInt(KEY_SCALE_SESSION_GAP, it) }
         editor.apply()
-        Log.i(TAG, "Applied provisioning payload v${json.optInt("v", 1)}")
+
+        Log.i(TAG, "Paired with ${payload.pcHost ?: "unknown host"}:${payload.pcPort ?: "?"}")
         return true
     }
 }

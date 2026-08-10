@@ -195,12 +195,16 @@ def config_from_dict(cfg: dict, config_dir: Path) -> OntoplanoConfig:
 
 
 class OntoplanoClient(Protocol):
-    """What the sync worker needs. Swappable so the worker can be tested
-    against a mock, and so sync-disabled costs nothing at runtime."""
+    """What the rest of massalarme needs from ontoplano. Swappable so the worker
+    can be tested against a mock, and so sync-disabled costs nothing at runtime."""
 
     async def declare_stream(self) -> bool: ...
 
     async def push_points(self, points: Sequence[Point]) -> PushResult: ...
+
+    async def whoami(self) -> dict: ...
+
+    async def fetch_schedule(self, days: int = 7) -> dict: ...
 
     async def close(self) -> None: ...
 
@@ -212,6 +216,12 @@ class DisabledClient:
         return False
 
     async def push_points(self, points: Sequence[Point]) -> PushResult:
+        raise ServerError("ontoplano sync is disabled")
+
+    async def whoami(self) -> dict:
+        raise ServerError("ontoplano sync is disabled")
+
+    async def fetch_schedule(self, days: int = 7) -> dict:
         raise ServerError("ontoplano sync is disabled")
 
     async def close(self) -> None:

@@ -207,7 +207,9 @@ On the phone:
 
 1. Open the **Massalarme** app.
 2. Tap **Scan QR Secret** and scan the QR code from `make secret`. This pairs with
-   the PC and configures the scale in one step.
+   the PC and configures the scale in one step. If it will not scan, zoom the
+   terminal in (`Ctrl +`) or open the PNG that `make secret` also writes to
+   `~/.local/share/massalarme/pairing-qr.png`.
 3. Tap **Grant permissions**. Bluetooth scanning and location are what let the
    phone hear the scale and tell whether it is on your home wifi — without them,
    hard alarms fall back to a dismiss button.

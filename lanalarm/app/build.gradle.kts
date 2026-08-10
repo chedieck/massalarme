@@ -38,6 +38,8 @@ dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
     testImplementation("junit:junit:4.13.2")
+    // Android stubs org.json in unit tests; this makes the JSON parsing path real.
+    testImplementation("org.json:json:20231013")
 }
 
 kotlin {

@@ -216,3 +216,74 @@ def test_alarms_beyond_the_fetched_window_are_not_deleted():
     merged = merge_into_schedule(current, [], now_ms=NOW_MS, horizon_days=7)
 
     assert merged["alarms"][0].get("deleted") is not True
+
+
+# ── Pairing payload ──────────────────────────────────────────────────
+#
+# The QR is read off a terminal by a phone camera, so density decides whether
+# the app can be set up at all. These guard the property that broke it.
+
+import qrcode  # noqa: E402
+
+from alarm_manager import (  # noqa: E402
+    PROVISIONING_PREFIX,
+    build_provisioning_payload,
+    encode_provisioning,
+)
+
+SECRET = "0d0f6d6f3a893d52d1275da38087d5f3d359e2d36800c0eaf502edbdc3fff710"
+
+CFG = {
+    "shared_secret": SECRET,
+    "pc_port": 8888,
+    "lan_network": "192.168.1.0/24",
+    "syncing_weight_flag": 164,
+    "min_weight_kg": 68,
+    "weigh_in_gap_seconds": 90,
+}
+
+
+def qr_modules(data: str) -> int:
+    code = qrcode.QRCode(border=0)
+    code.add_data(data)
+    code.make(fit=True)
+    return len(code.get_matrix())
+
+
+def test_the_pairing_payload_stays_sparse_enough_to_scan():
+    """A JSON payload needed a 63x63 code, which no phone could read off a
+    terminal. Anything much past the original 39x39 is a regression."""
+    encoded = encode_provisioning(build_provisioning_payload(CFG))
+
+    assert qr_modules(encoded) <= 41
+
+
+def test_every_character_stays_in_qr_alphanumeric_mode():
+    """That mode is what buys the density back. A lowercase letter silently
+    forces byte mode and inflates the code."""
+    allowed = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:")
+    encoded = encode_provisioning(build_provisioning_payload(CFG))
+
+    assert set(encoded) <= allowed
+
+
+def test_the_payload_carries_what_the_phone_needs():
+    encoded = encode_provisioning(build_provisioning_payload(CFG))
+    parts = encoded.split(":")
+
+    assert parts[0] == PROVISIONING_PREFIX
+    assert parts[1] == SECRET.upper()
+    assert parts[3] == "8888"
+    assert parts[4] == "164"
+    assert parts[5] == "68"       # integral weights lose the ".0"
+    assert parts[6] == "90"
+
+
+def test_a_fractional_minimum_weight_survives():
+    payload = build_provisioning_payload({**CFG, "min_weight_kg": 67.5})
+    assert encode_provisioning(payload).split(":")[5] == "67.5"
+
+
+def test_the_encoded_secret_is_the_configured_one_case_aside():
+    encoded = encode_provisioning(build_provisioning_payload(CFG))
+    assert encoded.split(":")[1].lower() == SECRET

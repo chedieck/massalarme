@@ -29,7 +29,7 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime, time as dt_time, timedelta, timezone
+from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -47,10 +47,10 @@ from store import (
     SOURCE_PC,
     SOURCE_PHONE,
     Measurement,
+    WeighIn,
     WeighInStore,
     make_external_id,
     parse_timestamp,
-    sessionise,
     utc_iso,
 )
 from sync import SyncWorker
@@ -368,24 +368,92 @@ def build_provisioning_payload(cfg: dict) -> dict:
     }
 
 
+PROVISIONING_PREFIX = "MA2"
+
+
+def encode_provisioning(payload: dict) -> str:
+    """Render the provisioning payload as a compact, scannable string.
+
+    Deliberately not JSON. The QR has to be read off a terminal by a phone
+    camera, and density is everything: the JSON form of this same payload needs a
+    63x63-module code, against 39x39 for the string below -- unreadable at the
+    same printed width, which is exactly how this broke.
+
+    Two things buy that back. The payload only carries what the app actually
+    uses, and every character stays inside QR's *alphanumeric* mode (uppercase
+    A-Z, digits, and a few punctuation marks including `:` and `.`), which packs
+    ~40% tighter than byte mode. Hence the uppercased secret.
+
+        MA2:<SECRET>:<host>:<port>:<stable_flag>:<min_kg>:<session_gap_s>
+    """
+    scale = payload["scale"]
+    min_weight = scale["min_weight_kg"]
+    # Keep it integral when it can be; "68" beats "68.0" and both are legal
+    # alphanumeric characters.
+    min_weight_text = (
+        str(int(min_weight)) if float(min_weight).is_integer() else f"{min_weight:.1f}"
+    )
+
+    return ":".join(
+        [
+            PROVISIONING_PREFIX,
+            str(payload["secret"]).upper(),
+            str(payload["pc_host"]),
+            str(payload["pc_port"]),
+            str(scale["stable_flag"]),
+            min_weight_text,
+            str(scale["session_gap_seconds"]),
+        ]
+    )
+
+
+def _write_secret_png(encoded: str) -> Optional[Path]:
+    """Also save the QR as an image, as a guaranteed-scannable fallback.
+
+    A terminal at a small font size can defeat any QR; an image the user can
+    open and zoom cannot.
+    """
+    try:
+        import qrcode  # type: ignore[import-untyped]
+
+        qr = qrcode.QRCode(border=4, box_size=10)
+        qr.add_data(encoded)
+        qr.make(fit=True)
+        path = DATA_DIR / "pairing-qr.png"
+        qr.make_image(fill_color="black", back_color="white").save(str(path))
+        return path
+    except Exception as exc:  # pillow missing, read-only dir, ...
+        logger.debug("Could not write QR image: %s", exc)
+        return None
+
+
 def _show_secret_qr(secret: str, cfg: Optional[dict] = None) -> None:
     """Print the provisioning QR code to the terminal."""
     payload = build_provisioning_payload(cfg or {"shared_secret": secret})
-    encoded = json.dumps(payload, separators=(",", ":"))
+    encoded = encode_provisioning(payload)
 
     try:
         import qrcode  # type: ignore[import-untyped]
 
-        qr = qrcode.QRCode(border=1)
+        # A full four-module quiet zone. The old border=1 survived a 64-character
+        # payload but gives scanners nothing to lock onto on a denser code.
+        qr = qrcode.QRCode(border=4)
         qr.add_data(encoded)
         qr.make(fit=True)
         qr.print_ascii(tty=sys.stdout.isatty())
+
         logger.info(
             "Scan the QR code above with the Massalarme app. It carries the shared "
             "secret, this PC's address (%s:%s) and the scale parameters.",
             payload["pc_host"],
             payload["pc_port"],
         )
+        image_path = _write_secret_png(encoded)
+        if image_path:
+            logger.info(
+                "If the terminal code will not scan, zoom in (Ctrl +) or open %s",
+                image_path,
+            )
     except ImportError:
         logger.warning(
             "qrcode package not installed \u2013 cannot display QR code. "
@@ -1231,23 +1299,22 @@ async def _handle_stop_alarm(request: web.Request) -> web.Response:
     return web.Response(text="Alarm stopped via failsafe")
 
 
-def _parse_reported_reading(entry: dict) -> "WeighIn":
+def _parse_reported_reading(entry: dict) -> WeighIn:
     """Turn one JSON reading from the phone into a WeighIn, or raise ValueError.
 
     The `external_id` is recomputed from the reading's own content rather than
     trusted. Both sides run the same pure function, so a well-behaved phone
     always agrees; a buggy one cannot poison the id space.
     """
-    from store import WeighIn  # local import keeps the module header tidy
-
     captured_raw = entry.get("captured_at") or entry.get("at")
     if not captured_raw:
         raise ValueError("missing captured_at")
     captured_at = parse_timestamp(str(captured_raw))
 
-    if "weight_kg" not in entry and "value" not in entry:
+    raw_weight = entry.get("weight_kg", entry.get("value"))
+    if raw_weight is None:
         raise ValueError("missing weight_kg")
-    weight_kg = float(entry.get("weight_kg", entry.get("value")))
+    weight_kg = float(raw_weight)
     if not (0 < weight_kg < 500):
         raise ValueError(f"implausible weight {weight_kg}")
 
