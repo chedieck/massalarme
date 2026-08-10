@@ -77,7 +77,10 @@ def parse_rules(raw_rules: List[dict]) -> List[Rule]:
 
         title_pattern = match.get("title")
         try:
-            compiled = re.compile(title_pattern) if title_pattern else None
+            # Case-insensitive by default: "acordar" should match "Acordar",
+            # and nobody wants to remember to type (?i) to get there. An
+            # explicit (?i) in the pattern stays valid, just redundant.
+            compiled = re.compile(title_pattern, re.IGNORECASE) if title_pattern else None
         except re.error as exc:
             logger.warning("Ignoring rule with bad title regex %r: %s", title_pattern, exc)
             continue

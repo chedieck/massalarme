@@ -287,3 +287,13 @@ def test_a_fractional_minimum_weight_survives():
 def test_the_encoded_secret_is_the_configured_one_case_aside():
     encoded = encode_provisioning(build_provisioning_payload(CFG))
     assert encoded.split(":")[1].lower() == SECRET
+
+
+def test_title_matching_ignores_case_without_needing_a_flag():
+    """The rule is typed on a phone keyboard; requiring "(?i)" to match
+    "Acordar" would be a trap."""
+    rules = parse_rules([{"match": {"title": "^acordar"}, "kind": "hard"}])
+
+    assert classify(occurrence(title="Acordar"), rules) == "hard"
+    assert classify(occurrence(title="ACORDAR CEDO"), rules) == "hard"
+    assert classify(occurrence(title="Nao acordar"), rules) is None  # ^ still anchors
