@@ -320,6 +320,22 @@ class AlarmService : Service() {
 
     fun isScanningScale(): Boolean = scaleScanner.isScanning()
 
+    /**
+     * Tell the PC which ontoplano tasks should become alarms.
+     *
+     * The rule is edited on the phone but enforced on the PC, because that is
+     * the side holding the ontoplano token and doing the fetching.
+     */
+    fun pushOntoplanoRule(pattern: String, kind: String) {
+        sendWsMessage(
+            JSONObject().apply {
+                put("type", "set_ontoplano_rule")
+                put("pattern", pattern)
+                put("kind", kind)
+            }.toString()
+        )
+    }
+
     /** Push the local schedule to the PC so the two stay merged. */
     fun pushAlarmsToPC(alarmsJson: String) {
         sendWsMessage(

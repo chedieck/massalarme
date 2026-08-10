@@ -41,6 +41,13 @@ object AlarmSchedule {
         "sunday" to Calendar.SUNDAY
     )
 
+    val WEEKDAY_LABELS = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+    /** Single letters for the day toggles, in the same order as [WEEKDAYS]. */
+    val WEEKDAY_INITIALS = listOf("M", "T", "W", "T", "F", "S", "S")
+
+    const val ORIGIN_ONTOPLANO = "ontoplano"
+
     data class Alarm(
         val id: String,
         val name: String,
@@ -51,7 +58,10 @@ object AlarmSchedule {
         val enabled: Boolean,
         val deleted: Boolean,
         val kind: String,
-        val updatedAt: Long
+        val updatedAt: Long,
+        /** Set when this alarm was derived from the ontoplano planner. */
+        val origin: String? = null,
+        val originId: String? = null
     ) {
         /**
          * A hard alarm can only be silenced by standing on the scale.
@@ -64,6 +74,49 @@ object AlarmSchedule {
         val isHard: Boolean get() = kind != KIND_SOFT
 
         val isActive: Boolean get() = enabled && !deleted
+
+        /**
+         * Owned by ontoplano, so not editable here. Local edits would be undone
+         * by the next schedule sync anyway — better to say so than to let the
+         * user make a change that silently reverts.
+         */
+        val isReadOnly: Boolean get() = origin == ORIGIN_ONTOPLANO
+
+        /** What repeat this is, derived rather than stored separately. */
+        val repeatKind: String
+            get() = when {
+                date != null -> "date"
+                days.isEmpty() -> "once"
+                else -> "weekly"
+            }
+
+        /** Human summary of when it repeats, for the list and the editor. */
+        fun describeRepeat(): String = when {
+            date != null -> date
+            days.isEmpty() -> "Once"
+            days.size == 7 -> "Every day"
+            days.size == 5 && WEEKDAYS.take(5).all { it in days } -> "Weekdays"
+            days.size == 2 && WEEKDAYS.drop(5).all { it in days } -> "Weekends"
+            else -> days.sortedBy { WEEKDAYS.indexOf(it) }
+                .joinToString(" ") { WEEKDAY_LABELS[WEEKDAYS.indexOf(it)] }
+        }
+
+        fun toJson(): JSONObject = JSONObject().apply {
+            put("id", id)
+            put("name", name)
+            put("time", time)
+            put("enabled", enabled)
+            put("kind", kind)
+            put("updated_at", updatedAt)
+            if (deleted) put("deleted", true)
+            origin?.let { put("origin", it) }
+            originId?.let { put("origin_id", it) }
+            when {
+                date != null -> put("date", date)
+                days.isNotEmpty() -> put("days", JSONArray(days))
+                else -> put("type", "next")
+            }
+        }
     }
 
     // ─── Parsing ─────────────────────────────────────────────────────
@@ -101,12 +154,47 @@ object AlarmSchedule {
                     enabled = entry.optBoolean("enabled", true),
                     deleted = entry.optBoolean("deleted", false),
                     kind = entry.optString("kind", KIND_HARD).lowercase(Locale.US),
-                    updatedAt = entry.optLong("updated_at", 0L)
+                    updatedAt = entry.optLong("updated_at", 0L),
+                    origin = entry.optString("origin").takeIf { it.isNotBlank() },
+                    originId = entry.optString("origin_id").takeIf { it.isNotBlank() }
                 )
             )
         }
         return alarms
     }
+
+    /**
+     * Replace or append an alarm in the stored schedule and return the new root.
+     *
+     * Tombstones rather than removes on delete, so the PC's merge propagates the
+     * deletion instead of resurrecting the alarm on the next sync.
+     */
+    fun upsert(root: JSONObject, alarm: Alarm): JSONObject {
+        val array = root.optJSONArray("alarms") ?: JSONArray()
+        var replaced = false
+        for (i in 0 until array.length()) {
+            if (array.optJSONObject(i)?.optString("id") == alarm.id) {
+                array.put(i, alarm.toJson())
+                replaced = true
+                break
+            }
+        }
+        if (!replaced) array.put(alarm.toJson())
+        return root.apply {
+            put("version", 2)
+            put("alarms", array)
+        }
+    }
+
+    /** Sort for display: soonest first, disabled ones last. */
+    fun forDisplay(alarms: List<Alarm>, now: Long = System.currentTimeMillis()): List<Alarm> =
+        alarms.filterNot { it.deleted }
+            .sortedWith(
+                compareBy(
+                    { !it.enabled },
+                    { nextOccurrence(it.copy(enabled = true), now) ?: Long.MAX_VALUE }
+                )
+            )
 
     // ─── Occurrence maths ────────────────────────────────────────────
 

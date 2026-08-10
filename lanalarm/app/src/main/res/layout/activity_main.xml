@@ -234,7 +234,101 @@
                 android:layout_height="wrap_content"
                 android:text="Listen for scale"
                 android:backgroundTint="@color/primary_accent"
+                android:textColor="@color/text_primary"
+                android:layout_marginBottom="24dp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider"
+                android:layout_marginBottom="24dp" />
+
+            <!-- Which ontoplano tasks become alarms. -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="ONTOPLANO TASKS"
+                android:textColor="@color/text_muted"
+                android:textSize="11sp"
+                android:letterSpacing="0.12"
+                android:gravity="center"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Tasks whose title matches this become alarms, shown read-only in the Alarms tab."
+                android:textColor="@color/text_muted"
+                android:textSize="12sp"
+                android:gravity="center"
+                android:layout_marginBottom="10dp" />
+
+            <EditText
+                android:id="@+id/ontoplano_pattern"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/time_field"
+                android:hint="^acordar"
+                android:inputType="text"
+                android:padding="14dp"
+                android:singleLine="true"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_muted"
+                android:textSize="15sp"
+                android:layout_marginBottom="8dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:baselineAligned="false"
+                android:layout_marginBottom="8dp">
+
+                <TextView
+                    android:id="@+id/ontoplano_kind_hard"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/chip_outline"
+                    android:gravity="center"
+                    android:paddingTop="10dp"
+                    android:paddingBottom="10dp"
+                    android:text="Scale"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp"
+                    android:layout_marginEnd="8dp" />
+
+                <TextView
+                    android:id="@+id/ontoplano_kind_soft"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/chip_outline"
+                    android:gravity="center"
+                    android:paddingTop="10dp"
+                    android:paddingBottom="10dp"
+                    android:text="A button"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/ontoplano_save"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Apply to PC"
+                android:backgroundTint="@color/primary_accent"
                 android:textColor="@color/text_primary" />
+
+            <TextView
+                android:id="@+id/ontoplano_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textColor="@color/text_muted"
+                android:textSize="12sp"
+                android:gravity="center"
+                android:layout_marginTop="8dp" />
 
         </LinearLayout>
 
@@ -277,9 +371,9 @@
 
             <Button
                 android:id="@+id/alarms_add"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="+"
+                android:text="+  Add alarm"
                 android:textSize="20sp"
                 android:textStyle="bold"
                 android:backgroundTint="@color/secondary_accent"

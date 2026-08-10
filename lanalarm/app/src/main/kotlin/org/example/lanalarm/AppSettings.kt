@@ -35,6 +35,11 @@ object AppSettings {
     const val KEY_HOME_SSID = "home_ssid"
     const val KEY_HOME_BSSID = "home_bssid"
 
+    // Which ontoplano tasks become alarms. Held here and pushed to the PC,
+    // which is the side that actually talks to ontoplano.
+    const val KEY_ONTOPLANO_PATTERN = "ontoplano_pattern"
+    const val KEY_ONTOPLANO_KIND = "ontoplano_kind"
+
     // Upload state, for the status surface
     const val KEY_LAST_UPLOAD_OK = "last_upload_ok"
     const val KEY_LAST_UPLOAD_ERROR = "last_upload_error"
@@ -77,6 +82,19 @@ object AppSettings {
 
     fun sessionGapSeconds(context: Context): Int =
         prefs(context).getInt(KEY_SCALE_SESSION_GAP, DEFAULT_SESSION_GAP_SECONDS)
+
+    fun ontoplanoPattern(context: Context): String =
+        prefs(context).getString(KEY_ONTOPLANO_PATTERN, "") ?: ""
+
+    fun ontoplanoKind(context: Context): String =
+        prefs(context).getString(KEY_ONTOPLANO_KIND, "hard") ?: "hard"
+
+    fun setOntoplanoRule(context: Context, pattern: String, kind: String) {
+        prefs(context).edit()
+            .putString(KEY_ONTOPLANO_PATTERN, pattern.trim())
+            .putString(KEY_ONTOPLANO_KIND, kind)
+            .apply()
+    }
 
     fun homeSsid(context: Context): String? =
         prefs(context).getString(KEY_HOME_SSID, null)?.takeIf { it.isNotBlank() }

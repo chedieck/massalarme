@@ -22,6 +22,7 @@ import asyncio
 import logging
 import logging.handlers
 import os
+import re
 import secrets
 import socket
 import sqlite3
@@ -420,7 +421,7 @@ def _write_secret_png(encoded: str) -> Optional[Path]:
         qr.add_data(encoded)
         qr.make(fit=True)
         path = DATA_DIR / "pairing-qr.png"
-        qr.make_image(fill_color="black", back_color="white").save(str(path))
+        qr.make_image(fill_color="black", back_color="white").save(path)
         return path
     except Exception as exc:  # pillow missing, read-only dir, ...
         logger.debug("Could not write QR image: %s", exc)
@@ -1473,6 +1474,14 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
                         _current_alarms.update(merged)
                         logger.info("Alarms merged via WS from %s", peer)
                         await broadcast_alarms(_current_alarms, exclude=ws)
+                    elif msg_type == "set_ontoplano_rule":
+                        # The phone chooses which planner tasks become alarms;
+                        # this side owns the token and does the fetching.
+                        _apply_ontoplano_rule(
+                            payload.get("pattern", ""), payload.get("kind", "hard")
+                        )
+                        if _schedule_refresh is not None:
+                            _schedule_refresh.set()
                     elif msg_type == "alarm_dismissed":
                         logger.info("Alarm dismissed via passphrase (from %s)", peer)
                         if _alarm_dismissed is not None:
@@ -1790,72 +1799,119 @@ async def main_loop() -> None:
                 task.cancel()
 
 
+_schedule_refresh: Optional[asyncio.Event] = None
+
+
+def _apply_ontoplano_rule(pattern: str, kind: str) -> None:
+    """Persist the phone's task-matching rule into config.yaml.
+
+    Stored as the single rule under `ontoplano.schedule.rules`, replacing
+    whatever was there: the phone's screen is the source of truth for it, and
+    silently keeping a stale rule alongside would be worse than surprising.
+    """
+    pattern = (pattern or "").strip()
+    kind = kind if kind in (schedule_sync.KIND_HARD, schedule_sync.KIND_SOFT) else "hard"
+
+    if pattern:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            logger.warning("Phone sent an invalid ontoplano pattern %r: %s", pattern, exc)
+            return
+
+    section = _current_cfg.setdefault("ontoplano", {}).setdefault("schedule", {})
+    section["rules"] = [{"match": {"title": pattern}, "kind": kind}] if pattern else []
+    section["enabled"] = bool(pattern)
+    _save_config(_current_cfg)
+
+    logger.info(
+        "ontoplano rule from phone: %s",
+        f"title ~ {pattern!r} -> {kind}" if pattern else "cleared",
+    )
+
+
 async def _schedule_sync_loop(cfg: dict) -> None:
     """Poll the ontoplano planner and turn occurrences into alarms.
 
     Failures here are never fatal: a planner that is unreachable just means the
     schedule stops updating, and every alarm already on the phone still rings.
-    """
-    global _current_alarms
 
-    section = (cfg.get("ontoplano") or {}).get("schedule") or {}
+    The matching rule is re-read every pass rather than captured once, because
+    the phone can change it at any moment over the WebSocket.
+    """
+    global _current_alarms, _schedule_refresh
+
     op_config = ontoplano.config_from_dict(cfg, CONFIG_DIR)
     if not op_config.usable:
         logger.info("ontoplano schedule sync skipped: sync is not configured")
         return
 
-    rules = schedule_sync.parse_rules(section.get("rules") or [])
-    if not rules:
-        logger.warning("ontoplano schedule sync enabled but no rules configured")
-        return
-
-    days = int(section.get("days", 7))
-    poll_seconds = max(60, int(section.get("poll_minutes", 30)) * 60)
+    _schedule_refresh = asyncio.Event()
     client = ontoplano.build_client(op_config)
-
-    logger.info(
-        "ontoplano schedule sync every %d min over %d day(s), %d rule(s)",
-        poll_seconds // 60,
-        days,
-        len(rules),
-    )
+    logger.info("ontoplano schedule sync started")
 
     try:
         while True:
-            try:
-                schedule = await client.fetch_schedule(days=days)
-                now_ms = _now_ms()
-                derived = schedule_sync.build_alarms(schedule, rules, now_ms)
+            section = (_current_cfg.get("ontoplano") or {}).get("schedule") or {}
+            rules = schedule_sync.parse_rules(section.get("rules") or [])
+            days = int(section.get("days", 7))
+            poll_seconds = max(60, int(section.get("poll_minutes", 30)) * 60)
 
+            if rules:
+                try:
+                    schedule = await client.fetch_schedule(days=days)
+                    now_ms = _now_ms()
+                    derived = schedule_sync.build_alarms(schedule, rules, now_ms)
+
+                    current, _ = load_alarms()
+                    merged = schedule_sync.merge_into_schedule(
+                        current, derived, now_ms=now_ms, horizon_days=days
+                    )
+
+                    if merged != current:
+                        _save_alarms(merged)
+                        _current_alarms = merged
+                        logger.info(
+                            "ontoplano schedule applied: %d alarm(s) derived", len(derived)
+                        )
+                        await broadcast_alarms(merged)
+                    else:
+                        logger.debug("ontoplano schedule unchanged")
+
+                except ontoplano.OntoplanoError as exc:
+                    logger.warning("ontoplano schedule fetch failed: %s", exc)
+                except Exception:
+                    logger.exception("Unexpected error in schedule sync")
+            else:
+                # No rule set yet. Retire anything previously derived, so
+                # clearing the pattern on the phone actually clears the alarms.
                 current, _ = load_alarms()
                 merged = schedule_sync.merge_into_schedule(
-                    current, derived, now_ms=now_ms, horizon_days=days
+                    current, [], now_ms=_now_ms(), horizon_days=days
                 )
-
                 if merged != current:
                     _save_alarms(merged)
                     _current_alarms = merged
-                    logger.info(
-                        "ontoplano schedule applied: %d alarm(s) derived", len(derived)
-                    )
+                    logger.info("ontoplano rule cleared – derived alarms retired")
                     await broadcast_alarms(merged)
-                else:
-                    logger.debug("ontoplano schedule unchanged")
 
-            except ontoplano.OntoplanoError as exc:
-                logger.warning("ontoplano schedule fetch failed: %s", exc)
-            except Exception:
-                logger.exception("Unexpected error in schedule sync")
-
-            await asyncio.sleep(poll_seconds)
+            # Wake early when the phone changes the rule.
+            _schedule_refresh.clear()
+            try:
+                await asyncio.wait_for(_schedule_refresh.wait(), timeout=poll_seconds)
+                logger.info("ontoplano rule changed – refreshing now")
+            except asyncio.TimeoutError:
+                pass
     finally:
         await client.close()
 
 
 async def _start_schedule_sync(cfg: dict) -> Optional[asyncio.Task]:
-    section = (cfg.get("ontoplano") or {}).get("schedule") or {}
-    if not section.get("enabled", False):
+    op_config = ontoplano.config_from_dict(cfg, CONFIG_DIR)
+    if not op_config.usable:
         return None
+    # Started even with no rule configured: the phone can set one at any time,
+    # and the loop handles the empty case by retiring derived alarms.
     return asyncio.create_task(_schedule_sync_loop(cfg))
 
 

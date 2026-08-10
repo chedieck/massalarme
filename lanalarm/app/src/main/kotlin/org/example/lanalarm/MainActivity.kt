@@ -71,6 +71,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var readingsStatus: TextView
     private lateinit var uploadNowButton: Button
     private lateinit var weighNowButton: Button
+    private lateinit var ontoplanoPattern: EditText
+    private lateinit var ontoplanoKindHard: TextView
+    private lateinit var ontoplanoKindSoft: TextView
+    private lateinit var ontoplanoSave: Button
+    private lateinit var ontoplanoStatus: TextView
 
     private val wsStatusRunnable = object : Runnable {
         override fun run() {
@@ -145,6 +150,11 @@ class MainActivity : AppCompatActivity() {
         readingsStatus = findViewById(R.id.readings_status)
         uploadNowButton = findViewById(R.id.upload_now)
         weighNowButton = findViewById(R.id.weigh_now)
+        ontoplanoPattern = findViewById(R.id.ontoplano_pattern)
+        ontoplanoKindHard = findViewById(R.id.ontoplano_kind_hard)
+        ontoplanoKindSoft = findViewById(R.id.ontoplano_kind_soft)
+        ontoplanoSave = findViewById(R.id.ontoplano_save)
+        ontoplanoStatus = findViewById(R.id.ontoplano_status)
 
         setHomeWifiButton.setOnClickListener { captureHomeNetwork() }
         grantPermissionsButton.setOnClickListener { requestRuntimePermissions() }
@@ -154,6 +164,10 @@ class MainActivity : AppCompatActivity() {
             uploadNowButton.postDelayed({ updateUI() }, 1500)
         }
         weighNowButton.setOnClickListener { toggleScaleListening() }
+
+        ontoplanoKindHard.setOnClickListener { selectOntoplanoKind(AlarmSchedule.KIND_HARD) }
+        ontoplanoKindSoft.setOnClickListener { selectOntoplanoKind(AlarmSchedule.KIND_SOFT) }
+        ontoplanoSave.setOnClickListener { applyOntoplanoRule() }
 
         tabSettings.setOnClickListener { selectTab(Tab.SETTINGS) }
         tabAlarms.setOnClickListener { selectTab(Tab.ALARMS) }
@@ -236,6 +250,12 @@ class MainActivity : AppCompatActivity() {
             pcAddress == null -> "Paired, but PC address unknown — rescan"
             else -> "Paired with $pcAddress"
         }
+
+        // Don't clobber what the user is part-way through typing.
+        if (!ontoplanoPattern.hasFocus()) {
+            ontoplanoPattern.setText(AppSettings.ontoplanoPattern(this))
+        }
+        renderOntoplanoRule()
 
         updateSensingStatus()
 
@@ -327,6 +347,55 @@ class MainActivity : AppCompatActivity() {
         updateUI()
     }
 
+    /**
+     * Which ontoplano tasks become alarms.
+     *
+     * The rule is chosen here but enforced on the PC — that is the side holding
+     * the ontoplano token and doing the fetching — so applying it sends the rule
+     * over the same WebSocket the schedule already uses.
+     */
+    private fun selectOntoplanoKind(kind: String) {
+        AppSettings.setOntoplanoRule(this, ontoplanoPattern.text.toString(), kind)
+        renderOntoplanoRule()
+    }
+
+    private fun applyOntoplanoRule() {
+        val pattern = ontoplanoPattern.text.toString().trim()
+        val kind = AppSettings.ontoplanoKind(this)
+
+        if (pattern.isNotEmpty()) {
+            // Fail here rather than silently sending the PC something it will
+            // log a warning about and drop.
+            val valid = runCatching { Regex(pattern) }.isSuccess
+            if (!valid) {
+                ontoplanoStatus.text = "That is not a valid pattern"
+                return
+            }
+        }
+
+        AppSettings.setOntoplanoRule(this, pattern, kind)
+
+        val service = AlarmService.instance
+        if (service == null || !AlarmService.wsConnected) {
+            ontoplanoStatus.text = "Saved. Will reach the PC when it reconnects."
+            return
+        }
+
+        service.pushOntoplanoRule(pattern, kind)
+        ontoplanoStatus.text = if (pattern.isEmpty()) {
+            "Cleared — no ontoplano tasks will become alarms."
+        } else {
+            "Sent to the PC. Matching tasks appear in Alarms shortly."
+        }
+        renderOntoplanoRule()
+    }
+
+    private fun renderOntoplanoRule() {
+        val kind = AppSettings.ontoplanoKind(this)
+        ontoplanoKindHard.isSelected = kind == AlarmSchedule.KIND_HARD
+        ontoplanoKindSoft.isSelected = kind == AlarmSchedule.KIND_SOFT
+    }
+
     private fun updateSensingStatus() {
         nextAlarmStatus.text = AlarmScheduler.nextAlarmDescription(this)
 
@@ -403,456 +472,120 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderAlarms() {
-        val prefs = getSharedPreferences(AlarmService.PREFS_NAME, MODE_PRIVATE)
-        val alarmsJson = prefs.getString(AlarmService.KEY_ALARMS, null)
-        val lastSync = prefs.getLong(AlarmService.KEY_LAST_SYNC, 0L)
+        val prefs = AppSettings.prefs(this)
+        val alarms = AlarmSchedule.forDisplay(
+            AlarmSchedule.parse(prefs.getString(AppSettings.KEY_ALARMS, null))
+        )
+        val lastSync = prefs.getLong(AppSettings.KEY_LAST_SYNC, 0L)
 
         alarmsList.removeAllViews()
-        alarmsEmpty.visibility = View.GONE
-        alarmsScroll.visibility = View.VISIBLE
-        alarmsAdd.visibility = if (AlarmService.wsConnected) View.VISIBLE else View.GONE
+        alarmsAdd.visibility = View.VISIBLE
 
-        val items = if (alarmsJson.isNullOrBlank()) {
-            emptyList()
-        } else {
-            parseAlarmsJson(alarmsJson)
-        }
-
-        if (items.isEmpty()) {
+        if (alarms.isEmpty()) {
             alarmsEmpty.visibility = View.VISIBLE
             alarmsScroll.visibility = View.GONE
         } else {
-            val grouped = items.groupBy { it.alarmType }
-            val order = listOf("weekly", "date", "next")
-            var isFirstSection = true
-            for (type in order) {
-                val sectionItems = grouped[type].orEmpty().let { current ->
-                    if (type == "weekly") current.sortedBy { it.time } else current
-                }
-                if (sectionItems.isEmpty()) continue
-                val sectionLabel = when (type) {
-                    "date" -> "Date"
-                    "next" -> "Next"
-                    else -> "Weekly"
-                }
-                alarmsList.addView(buildSectionHeader(sectionLabel, isFirstSection))
-                isFirstSection = false
-                for (item in sectionItems) {
-                    alarmsList.addView(buildAlarmRow(item))
-                }
-            }
+            alarmsEmpty.visibility = View.GONE
+            alarmsScroll.visibility = View.VISIBLE
+            alarms.forEach { alarmsList.addView(buildAlarmRow(it)) }
         }
 
-        alarmsLastSync.text = if (lastSync > 0L) {
-            val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-            "Last synced: ${fmt.format(Date(lastSync))}"
+        alarmsLastSync.text = when {
+            lastSync <= 0L -> "Never synced with the PC"
+            else -> "Synced " + SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
+                .format(Date(lastSync))
+        }
+    }
+
+    private fun buildAlarmRow(alarm: AlarmSchedule.Alarm): View {
+        val row = layoutInflater.inflate(R.layout.item_alarm, alarmsList, false)
+
+        val time: TextView = row.findViewById(R.id.alarm_time)
+        val name: TextView = row.findViewById(R.id.alarm_name)
+        val days: TextView = row.findViewById(R.id.alarm_days)
+        val kindBadge: TextView = row.findViewById(R.id.alarm_kind_badge)
+        val originBadge: TextView = row.findViewById(R.id.alarm_origin_badge)
+        val enabled: Switch = row.findViewById(R.id.alarm_enabled)
+
+        time.text = alarm.time
+        name.text = alarm.name
+        days.text = alarm.describeRepeat()
+        kindBadge.text = if (alarm.isHard) "SCALE" else "SOFT"
+
+        // Disabled alarms stay legible but visibly inactive.
+        row.alpha = if (alarm.enabled) 1f else 0.45f
+
+        enabled.setOnCheckedChangeListener(null)
+        enabled.isChecked = alarm.enabled
+        enabled.isEnabled = !alarm.isReadOnly
+        enabled.setOnCheckedChangeListener { _, checked ->
+            saveAlarm(alarm.copy(enabled = checked, updatedAt = System.currentTimeMillis()))
+        }
+
+        if (alarm.isReadOnly) {
+            originBadge.visibility = View.VISIBLE
+            row.setOnClickListener {
+                Toast.makeText(
+                    this,
+                    "Set by ontoplano. Change the task there, or the match pattern in Settings.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         } else {
-            "Last synced: —"
+            originBadge.visibility = View.GONE
+            row.setOnClickListener { editAlarm(alarm) }
         }
-    }
 
-    private data class AlarmItem(
-        val id: String,
-        val time: String,
-        val name: String,
-        val alarmType: String,
-        val days: List<String> = emptyList(),
-        val date: String? = null,
-        val enabled: Boolean = true,
-        val updatedAt: Long = 0L,
-        /** "hard" needs the scale; "soft" is dismissible. */
-        val kind: String = AlarmSchedule.KIND_HARD,
-        /** Set on alarms derived from the ontoplano planner. */
-        val origin: String? = null,
-        val originId: String? = null
-    ) {
-        val label: String
-            get() = when (alarmType) {
-                "date" -> date.orEmpty().ifBlank { "Date" }
-                "next" -> "Next"
-                else -> days
-                    .sortedBy { WEEKDAY_KEYS.indexOf(it) }
-                    .map { day ->
-                        val index = WEEKDAY_KEYS.indexOf(day)
-                        if (index >= 0) WEEKDAY_LABELS[index]
-                        else day.replaceFirstChar { it.titlecase(Locale.getDefault()) }
-                    }
-                    .ifEmpty { listOf("Weekly") }
-                    .joinToString(", ")
-            }
-
-        val category: String
-            get() = alarmType
-    }
-
-    private fun parseAlarmsJson(raw: String): List<AlarmItem> {
-        return try {
-            val root = JSONObject(raw)
-            val items = mutableListOf<AlarmItem>()
-            val alarms = root.optJSONArray("alarms") ?: JSONArray()
-
-            for (i in 0 until alarms.length()) {
-                val obj = alarms.optJSONObject(i) ?: continue
-                if (obj.optBoolean("deleted", false)) continue
-                val id = obj.optString("id", "")
-                val time = obj.optString("time", "")
-                val name = obj.optString("name", "")
-                val days = jsonArrayToStringList(obj.optJSONArray("days"))
-                    .map { it.lowercase(Locale.getDefault()) }
-                    .filter { it in WEEKDAY_KEYS }
-                val date = obj.optString("date", "").ifBlank { null }
-                val alarmType = when {
-                    obj.optString("type") == "next" -> "next"
-                    date != null -> "date"
-                    else -> "weekly"
-                }
-                if (id.isBlank() || (time.isBlank() && name.isBlank())) continue
-                items.add(
-                    AlarmItem(
-                        id = id,
-                        time = time,
-                        name = if (name.isNotBlank()) name else when (alarmType) {
-                            "date" -> date ?: "Date"
-                            "next" -> "Next"
-                            else -> "Weekly"
-                        },
-                        alarmType = alarmType,
-                        days = if (alarmType == "weekly") days else emptyList(),
-                        date = date,
-                        enabled = obj.optBoolean("enabled", true),
-                        updatedAt = obj.optLong("updated_at", 0L),
-                        kind = obj.optString("kind", AlarmSchedule.KIND_HARD)
-                            .lowercase(Locale.getDefault()),
-                        origin = obj.optString("origin").ifBlank { null },
-                        originId = obj.optString("origin_id").ifBlank { null }
-                    )
-                )
-            }
-
-            items
-        } catch (e: Exception) {
-            Toast.makeText(this, "Failed to parse alarms", Toast.LENGTH_SHORT).show()
-            emptyList()
-        }
-    }
-
-    private fun buildAlarmRow(item: AlarmItem): View {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.bg_surface))
-            setPadding(dpToPx(12), dpToPx(12), dpToPx(12), dpToPx(12))
-            layoutParams = LinearLayout.LayoutParams(
+        (row.layoutParams as? LinearLayout.LayoutParams
+            ?: LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dpToPx(12)
-            }
+            )).let {
+            it.bottomMargin = dpToPx(10)
+            row.layoutParams = it
         }
 
-        val left = TextView(this).apply {
-            text = item.label
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_muted))
-            textSize = 14f
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        val right = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f)
-        }
-
-        val time = TextView(this).apply {
-            text = item.time
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.secondary_accent))
-            textSize = 22f
-        }
-
-        val name = TextView(this).apply {
-            text = item.name
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
-            textSize = 14f
-        }
-
-        right.addView(time)
-        right.addView(name)
-        row.addView(left)
-        row.addView(right)
-        row.setOnClickListener { showEditAlarmDialog(item) }
-        row.setOnLongClickListener {
-            showDeleteAlarmDialog(item)
-            true
-        }
         return row
     }
 
-    private fun buildSectionHeader(label: String, isFirst: Boolean): View {
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                if (!isFirst) {
-                    topMargin = dpToPx(16)
-                }
-                bottomMargin = dpToPx(8)
-            }
-        }
-
-        val text = TextView(this).apply {
-            text = label
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.secondary_accent))
-            textSize = 16f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }
-
-        val divider = View(this).apply {
-            setBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.divider))
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dpToPx(1)
-            ).apply {
-                topMargin = dpToPx(6)
-            }
-        }
-
-        container.addView(text)
-        container.addView(divider)
-        return container
-    }
-
-    private fun showEditAlarmDialog(item: AlarmItem) {
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(20), dpToPx(12), dpToPx(20), dpToPx(8))
-        }
-
-        val typeOptions = listOf("Weekly", "Date", "Next")
-        val typeSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                typeOptions
-            )
-            setSelection(
-                when (item.alarmType) {
-                    "date" -> 1
-                    "next" -> 2
-                    else -> 0
-                }
-            )
-        }
-
-        val nameInput = EditText(this).apply {
-            hint = "Name"
-            setText(item.name)
-        }
-
-        val timeInput = EditText(this).apply {
-            hint = "HH:MM or HH:MM:SS"
-            setText(item.time)
-        }
-
-        val dateInput = EditText(this).apply {
-            hint = "DD-MM-YYYY"
-            setText(item.date.orEmpty())
-        }
-
-        val weekdaysLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
-        val dayCheckboxes = WEEKDAY_KEYS.mapIndexed { index, day ->
-            CheckBox(this).apply {
-                text = WEEKDAY_LABELS[index]
-                isChecked = day in item.days
-            }.also { weekdaysLayout.addView(it) }
-        }
-
-        fun updateTypeVisibility(position: Int) {
-            weekdaysLayout.visibility = if (position == 0) View.VISIBLE else View.GONE
-            dateInput.visibility = if (position == 1) View.VISIBLE else View.GONE
-        }
-
-        typeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(
-                parent: AdapterView<*>?,
-                view: View?,
-                position: Int,
-                id: Long
-            ) {
-                updateTypeVisibility(position)
-            }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-        }
-
-        val kindSpinner = buildKindSpinner(item.kind)
-
-        content.addView(typeSpinner)
-        content.addView(kindSpinner)
-        content.addView(nameInput)
-        content.addView(timeInput)
-        content.addView(weekdaysLayout)
-        content.addView(dateInput)
-        updateTypeVisibility(typeSpinner.selectedItemPosition)
-
-        AlertDialog.Builder(this)
-            .setTitle("Edit alarm")
-            .setView(content)
-            .setPositiveButton("Save") { _, _ ->
-                val prefs = getSharedPreferences(AlarmService.PREFS_NAME, MODE_PRIVATE)
-                val root = loadAlarmsRoot(
-                    prefs.getString(AlarmService.KEY_ALARMS, null)
-                )
-                val arr = root.optJSONArray("alarms") ?: JSONArray()
-                val selectedType = typeOptions[typeSpinner.selectedItemPosition].lowercase(Locale.getDefault())
-                val updatedAlarm = buildAlarmObject(
-                    id = item.id,
-                    type = selectedType,
-                    name = nameInput.text.toString().trim(),
-                    time = timeInput.text.toString().trim(),
-                    selectedDays = selectedWeekdays(dayCheckboxes),
-                    date = dateInput.text.toString().trim(),
-                    enabled = item.enabled,
-                    updatedAt = System.currentTimeMillis(),
-                    kind = kindSpinner.selectedKind(),
-                    origin = item.origin,
-                    originId = item.originId
-                )
-
-                for (i in 0 until arr.length()) {
-                    val obj = arr.optJSONObject(i) ?: continue
-                    if (obj.optString("id") == item.id) {
-                        arr.put(i, updatedAlarm)
-                        break
-                    }
-                }
-                root.put("alarms", arr)
-                prefs.edit().putString(AlarmService.KEY_ALARMS, root.toString()).apply()
-                sendAlarmsToPC(root.toString())
-                AlarmScheduler.rescheduleNext(this)
-                renderAlarms()
-                updateSensingStatus()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun showDeleteAlarmDialog(item: AlarmItem) {
-        AlertDialog.Builder(this)
-            .setTitle("Delete alarm")
-            .setMessage("Delete alarm '${item.name}' at ${item.time}?")
-            .setPositiveButton("Delete") { _, _ ->
-                val prefs = getSharedPreferences(AlarmService.PREFS_NAME, MODE_PRIVATE)
-                val root = loadAlarmsRoot(prefs.getString(AlarmService.KEY_ALARMS, null))
-                val arr = root.optJSONArray("alarms")
-                if (arr != null) {
-                    for (i in 0 until arr.length()) {
-                        val obj = arr.optJSONObject(i) ?: continue
-                        if (obj.optString("id") == item.id) {
-                            obj.put("deleted", true)
-                            obj.put("updated_at", System.currentTimeMillis())
-                            arr.put(i, obj)
-                            break
-                        }
-                    }
-                    root.put("alarms", arr)
-                    prefs.edit().putString(AlarmService.KEY_ALARMS, root.toString()).apply()
-                    sendAlarmsToPC(root.toString())
-                    renderAlarms()
-                }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+    private fun editAlarm(alarm: AlarmSchedule.Alarm) {
+        AlarmEditor(this).show(
+            existing = alarm,
+            onSave = { saveAlarm(it) },
+            onDelete = { deleteAlarm(it) }
+        )
     }
 
     private fun showAddAlarmDialog() {
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(20), dpToPx(12), dpToPx(20), dpToPx(8))
-        }
+        AlarmEditor(this).show(existing = null, onSave = { saveAlarm(it) })
+    }
 
-        val typeOptions = listOf("Weekly", "Date", "Next")
-        val typeSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                typeOptions
-            )
-        }
+    /** Persist one alarm, push it to the PC, and rebook the next AlarmManager slot. */
+    private fun saveAlarm(alarm: AlarmSchedule.Alarm) {
+        val prefs = AppSettings.prefs(this)
+        val root = loadAlarmsRoot(prefs.getString(AppSettings.KEY_ALARMS, null))
+        val updated = AlarmSchedule.upsert(root, alarm)
 
-        val nameInput = EditText(this).apply {
-            hint = "Name"
-        }
+        prefs.edit().putString(AppSettings.KEY_ALARMS, updated.toString()).apply()
+        sendAlarmsToPC(updated.toString())
+        AlarmScheduler.rescheduleNext(this)
+        renderAlarms()
+        updateSensingStatus()
+    }
 
-        val timeInput = EditText(this).apply {
-            hint = "HH:MM or HH:MM:SS"
-        }
-
-        val dateInput = EditText(this).apply {
-            hint = "DD-MM-YYYY"
-            visibility = View.GONE
-        }
-
-        val weekdaysLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
-        val dayCheckboxes = WEEKDAY_KEYS.mapIndexed { index, _ ->
-            CheckBox(this).apply {
-                text = WEEKDAY_LABELS[index]
-            }.also { weekdaysLayout.addView(it) }
-        }
-
-        typeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(
-                parent: AdapterView<*>?,
-                view: View?,
-                position: Int,
-                id: Long
-            ) {
-                weekdaysLayout.visibility = if (position == 0) View.VISIBLE else View.GONE
-                dateInput.visibility = if (position == 1) View.VISIBLE else View.GONE
-            }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-        }
-
-        val kindSpinner = buildKindSpinner(AlarmSchedule.KIND_HARD)
-
-        content.addView(typeSpinner)
-        content.addView(kindSpinner)
-        content.addView(nameInput)
-        content.addView(timeInput)
-        content.addView(weekdaysLayout)
-        content.addView(dateInput)
-
-        AlertDialog.Builder(this)
-            .setTitle("Add alarm")
-            .setView(content)
-            .setPositiveButton("Add") { _, _ ->
-                val prefs = getSharedPreferences(AlarmService.PREFS_NAME, MODE_PRIVATE)
-                val root = loadAlarmsRoot(prefs.getString(AlarmService.KEY_ALARMS, null))
-                val arr = root.optJSONArray("alarms") ?: JSONArray()
-                val selectedType = typeOptions[typeSpinner.selectedItemPosition].lowercase(Locale.getDefault())
-                arr.put(
-                    buildAlarmObject(
-                        id = UUID.randomUUID().toString().take(8),
-                        type = selectedType,
-                        name = nameInput.text.toString().trim(),
-                        time = timeInput.text.toString().trim(),
-                        selectedDays = selectedWeekdays(dayCheckboxes),
-                        date = dateInput.text.toString().trim(),
-                        enabled = true,
-                        updatedAt = System.currentTimeMillis(),
-                        kind = kindSpinner.selectedKind()
+    private fun deleteAlarm(alarm: AlarmSchedule.Alarm) {
+        AlertDialog.Builder(this, R.style.MassalarmeDialog)
+            .setTitle("Delete \"${alarm.name}\"?")
+            .setPositiveButton("Delete") { _, _ ->
+                // Tombstone rather than drop, so the PC propagates the deletion
+                // instead of syncing the alarm back.
+                saveAlarm(
+                    alarm.copy(
+                        deleted = true,
+                        enabled = false,
+                        updatedAt = System.currentTimeMillis()
                     )
                 )
-                root.put("alarms", arr)
-                prefs.edit().putString(AlarmService.KEY_ALARMS, root.toString()).apply()
-                sendAlarmsToPC(root.toString())
-                AlarmScheduler.rescheduleNext(this)
-                renderAlarms()
-                updateSensingStatus()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -871,67 +604,6 @@ class MainActivity : AppCompatActivity() {
         return root
     }
 
-    private fun buildAlarmObject(
-        id: String,
-        type: String,
-        name: String,
-        time: String,
-        selectedDays: List<String>,
-        date: String,
-        enabled: Boolean,
-        updatedAt: Long,
-        kind: String = AlarmSchedule.KIND_HARD,
-        origin: String? = null,
-        originId: String? = null
-    ): JSONObject {
-        return JSONObject().apply {
-            put("id", id)
-            put("name", name)
-            put("time", time)
-            put("enabled", enabled)
-            put("updated_at", updatedAt)
-            put("kind", kind)
-            // Preserve provenance so a hand-edit of an ontoplano-derived alarm
-            // is still recognised as that occurrence on the next schedule sync,
-            // instead of being tombstoned and re-added.
-            origin?.let { put("origin", it) }
-            originId?.let { put("origin_id", it) }
-            when (type) {
-                "date" -> put("date", date)
-                "next" -> put("type", "next")
-                else -> put("days", JSONArray(selectedDays))
-            }
-        }
-    }
-
-    /** Spinner for the hard/soft choice, shared by the add and edit dialogs. */
-    private fun buildKindSpinner(selected: String): Spinner = Spinner(this).apply {
-        adapter = ArrayAdapter(
-            this@MainActivity,
-            android.R.layout.simple_spinner_dropdown_item,
-            listOf("Hard — must step on the scale", "Soft — tap to dismiss")
-        )
-        setSelection(if (selected == AlarmSchedule.KIND_SOFT) 1 else 0)
-    }
-
-    private fun Spinner.selectedKind(): String =
-        if (selectedItemPosition == 1) AlarmSchedule.KIND_SOFT else AlarmSchedule.KIND_HARD
-
-    private fun selectedWeekdays(dayCheckboxes: List<CheckBox>): List<String> {
-        return dayCheckboxes.mapIndexedNotNull { index, checkBox ->
-            if (checkBox.isChecked) WEEKDAY_KEYS[index] else null
-        }
-    }
-
-    private fun jsonArrayToStringList(arr: JSONArray?): List<String> {
-        if (arr == null) return emptyList()
-        return buildList {
-            for (i in 0 until arr.length()) {
-                val value = arr.optString(i, "")
-                if (value.isNotBlank()) add(value)
-            }
-        }
-    }
 
     private fun sendAlarmsToPC(alarmsJson: String) {
         val payload = JSONObject()

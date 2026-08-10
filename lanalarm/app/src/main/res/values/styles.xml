@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      Dark dialog to match the rest of the app. Without this the AlertDialog
+      title and button bars inherit the light AppCompat theme and appear as
+      white bands above and below dark content.
+    -->
+    <style name="MassalarmeDialog" parent="Theme.AppCompat.Dialog.Alert">
+        <item name="android:windowBackground">@color/bg_dark</item>
+        <item name="android:colorBackground">@color/bg_dark</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_muted</item>
+        <item name="colorAccent">@color/secondary_accent</item>
+        <item name="android:textColorAlertDialogListItem">@color/text_primary</item>
+        <item name="buttonBarPositiveButtonStyle">@style/MassalarmeDialogButton</item>
+        <item name="buttonBarNegativeButtonStyle">@style/MassalarmeDialogButton</item>
+        <item name="buttonBarNeutralButtonStyle">@style/MassalarmeDialogButtonDestructive</item>
+    </style>
+
+    <style name="MassalarmeDialogButton" parent="Widget.AppCompat.Button.ButtonBar.AlertDialog">
+        <item name="android:textColor">@color/secondary_accent</item>
+    </style>
+
+    <!-- Delete reads as destructive, so it does not sit in the same colour as Save. -->
+    <style name="MassalarmeDialogButtonDestructive" parent="Widget.AppCompat.Button.ButtonBar.AlertDialog">
+        <item name="android:textColor">@color/error_red</item>
+    </style>
+
+
+    <!--
+      The clock and calendar pickers are framework dialogs, so they need an
+      android:* parent rather than an AppCompat one. Without this they show up
+      as a bright white panel in the middle of a dark app.
+    -->
+    <style name="MassalarmePicker" parent="android:Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">@color/secondary_accent</item>
+        <item name="android:windowBackground">@color/bg_dark</item>
+        <item name="android:colorBackground">@color/bg_dark</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+    </style>
+
+</resources>
