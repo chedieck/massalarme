@@ -9,32 +9,25 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:paddingTop="16dp"
-        android:paddingBottom="12dp">
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="14dp"
+        android:paddingBottom="10dp">
 
         <TextView
             android:id="@+id/tab_settings"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Settings"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:textColor="@color/text_muted"
-            android:gravity="center" />
+            style="@style/TabLabel"
+            android:text="Settings" />
 
         <TextView
             android:id="@+id/tab_alarms"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Alarms"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:textColor="@color/text_muted"
-            android:gravity="center" />
+            style="@style/TabLabel"
+            android:text="Alarms" />
+
+        <TextView
+            android:id="@+id/tab_weight"
+            style="@style/TabLabel"
+            android:text="Weight" />
     </LinearLayout>
 
     <View
@@ -51,8 +44,8 @@
         android:textColor="@color/ws_disconnected"
         android:paddingStart="16dp"
         android:paddingEnd="16dp"
-        android:paddingTop="4dp"
-        android:paddingBottom="4dp"
+        android:paddingTop="5dp"
+        android:paddingBottom="5dp"
         android:background="@color/bg_dark" />
 
     <FrameLayout
@@ -60,279 +53,9 @@
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <ScrollView
-            android:id="@+id/settings_content"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="@color/bg_dark">
+        <include layout="@layout/settings_pane" />
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="24dp"
-            android:gravity="center_horizontal"
-            android:background="@color/bg_dark">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Massalarme"
-                android:textSize="28sp"
-                android:textStyle="bold"
-                android:textColor="@color/secondary_accent"
-                android:layout_marginBottom="24dp" />
-
-            <TextView
-                android:id="@+id/next_alarm_status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="No upcoming alarms"
-                android:textSize="16sp"
-                android:gravity="center"
-                android:textColor="@color/secondary_accent"
-                android:layout_marginBottom="24dp" />
-
-            <TextView
-                android:id="@+id/service_status"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Service: Unknown"
-                android:textSize="18sp"
-                android:textColor="@color/text_primary"
-                android:layout_marginBottom="8dp" />
-
-            <Button
-                android:id="@+id/service_toggle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Toggle Service"
-                android:backgroundTint="@color/primary_accent"
-                android:textColor="@color/text_primary"
-                android:layout_marginBottom="24dp" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider"
-                android:layout_marginBottom="24dp" />
-
-            <TextView
-                android:id="@+id/secret_status"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Secret: Not set"
-                android:textSize="16sp"
-                android:textColor="@color/text_muted"
-                android:layout_marginBottom="8dp" />
-
-            <Button
-                android:id="@+id/scan_secret"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Scan QR Secret"
-                android:backgroundTint="@color/primary_accent"
-                android:textColor="@color/text_primary"
-                android:layout_marginBottom="24dp" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider"
-                android:layout_marginBottom="24dp" />
-
-            <Switch
-                android:id="@+id/boot_toggle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Start on boot"
-                android:textSize="16sp"
-                android:textColor="@color/text_primary"
-                android:layout_marginBottom="24dp" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider"
-                android:layout_marginBottom="24dp" />
-
-            <!-- Hard alarms only apply at home, where the scale is. -->
-            <TextView
-                android:id="@+id/home_wifi_status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Home wifi: not set"
-                android:textSize="16sp"
-                android:gravity="center"
-                android:textColor="@color/text_muted"
-                android:layout_marginBottom="8dp" />
-
-            <Button
-                android:id="@+id/set_home_wifi"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Use current wifi as home"
-                android:backgroundTint="@color/primary_accent"
-                android:textColor="@color/text_primary"
-                android:layout_marginBottom="24dp" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider"
-                android:layout_marginBottom="24dp" />
-
-            <TextView
-                android:id="@+id/permissions_status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Permissions: checking…"
-                android:textSize="16sp"
-                android:gravity="center"
-                android:textColor="@color/text_muted"
-                android:layout_marginBottom="8dp" />
-
-            <Button
-                android:id="@+id/grant_permissions"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Grant permissions"
-                android:backgroundTint="@color/primary_accent"
-                android:textColor="@color/text_primary"
-                android:layout_marginBottom="24dp" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider"
-                android:layout_marginBottom="24dp" />
-
-            <!-- Silent sync failure is the default failure mode of an
-                 integration like this, so it gets its own line. -->
-            <TextView
-                android:id="@+id/readings_status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="No weigh-ins recorded yet"
-                android:textSize="15sp"
-                android:gravity="center"
-                android:textColor="@color/text_muted"
-                android:layout_marginBottom="8dp" />
-
-            <Button
-                android:id="@+id/upload_now"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Upload now"
-                android:backgroundTint="@color/primary_accent"
-                android:textColor="@color/text_primary"
-                android:layout_marginBottom="8dp" />
-
-            <Button
-                android:id="@+id/weigh_now"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Listen for scale"
-                android:backgroundTint="@color/primary_accent"
-                android:textColor="@color/text_primary"
-                android:layout_marginBottom="24dp" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider"
-                android:layout_marginBottom="24dp" />
-
-            <!-- Which ontoplano tasks become alarms. -->
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="ONTOPLANO TASKS"
-                android:textColor="@color/text_muted"
-                android:textSize="11sp"
-                android:letterSpacing="0.12"
-                android:gravity="center"
-                android:layout_marginBottom="8dp" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Tasks whose title matches this become alarms, shown read-only in the Alarms tab."
-                android:textColor="@color/text_muted"
-                android:textSize="12sp"
-                android:gravity="center"
-                android:layout_marginBottom="10dp" />
-
-            <EditText
-                android:id="@+id/ontoplano_pattern"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="@drawable/time_field"
-                android:hint="^acordar"
-                android:inputType="text"
-                android:padding="14dp"
-                android:singleLine="true"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_muted"
-                android:textSize="15sp"
-                android:layout_marginBottom="8dp" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:baselineAligned="false"
-                android:layout_marginBottom="8dp">
-
-                <TextView
-                    android:id="@+id/ontoplano_kind_hard"
-                    android:layout_width="0dp"
-                    android:layout_weight="1"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/chip_outline"
-                    android:gravity="center"
-                    android:paddingTop="10dp"
-                    android:paddingBottom="10dp"
-                    android:text="Scale"
-                    android:textColor="@color/text_primary"
-                    android:textSize="13sp"
-                    android:layout_marginEnd="8dp" />
-
-                <TextView
-                    android:id="@+id/ontoplano_kind_soft"
-                    android:layout_width="0dp"
-                    android:layout_weight="1"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/chip_outline"
-                    android:gravity="center"
-                    android:paddingTop="10dp"
-                    android:paddingBottom="10dp"
-                    android:text="A button"
-                    android:textColor="@color/text_primary"
-                    android:textSize="13sp" />
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/ontoplano_save"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Apply to PC"
-                android:backgroundTint="@color/primary_accent"
-                android:textColor="@color/text_primary" />
-
-            <TextView
-                android:id="@+id/ontoplano_status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text=""
-                android:textColor="@color/text_muted"
-                android:textSize="12sp"
-                android:gravity="center"
-                android:layout_marginTop="8dp" />
-
-        </LinearLayout>
-
-        </ScrollView>
+        <include layout="@layout/weight_pane" />
 
         <LinearLayout
             android:id="@+id/alarms_content"
@@ -340,27 +63,25 @@
             android:layout_height="match_parent"
             android:orientation="vertical"
             android:padding="16dp"
-            android:background="@color/bg_dark"
-            android:visibility="gone">
+            android:background="@color/bg_dark">
 
             <TextView
                 android:id="@+id/alarms_empty"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="No alarms synced yet"
-                android:textSize="16sp"
+                android:text="No alarms yet"
                 android:textColor="@color/text_muted"
-                android:layout_gravity="center_horizontal"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="12dp"
+                android:textSize="15sp"
+                android:gravity="center"
+                android:paddingTop="40dp"
+                android:paddingBottom="40dp"
                 android:visibility="gone" />
 
             <ScrollView
                 android:id="@+id/alarms_scroll"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
-                android:layout_weight="1"
-                android:fillViewport="true">
+                android:layout_weight="1">
 
                 <LinearLayout
                     android:id="@+id/alarms_list"
@@ -374,23 +95,18 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="+  Add alarm"
-                android:textSize="20sp"
+                android:textSize="17sp"
                 android:textStyle="bold"
+                android:textAllCaps="false"
                 android:backgroundTint="@color/secondary_accent"
                 android:textColor="@color/bg_dark"
-                android:layout_gravity="center_horizontal"
-                android:layout_marginTop="12dp"
-                android:layout_marginBottom="4dp" />
+                android:layout_marginTop="8dp" />
 
             <TextView
                 android:id="@+id/alarms_last_sync"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Last synced: —"
-                android:textSize="14sp"
-                android:textColor="@color/text_muted"
-                android:layout_marginTop="12dp" />
-
+                style="@style/SettingsCaption"
+                android:text=""
+                android:gravity="center" />
         </LinearLayout>
 
     </FrameLayout>

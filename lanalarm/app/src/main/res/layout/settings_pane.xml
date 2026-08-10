@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Settings.
+
+  The previous version was a single centred column of differently-sized boxes
+  with hairline dividers between them, which gave the eye nothing to group on.
+  This is a stack of cards: one card per concern, a heading, left-aligned labels
+  with their values directly beneath, and actions at the bottom of the card they
+  belong to.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/settings_content"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_dark"
+    android:clipToPadding="false">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- ── Service ─────────────────────────────────────────────── -->
+        <LinearLayout style="@style/SettingsCard">
+
+            <TextView style="@style/SettingsHeading" android:text="SERVICE" />
+
+            <TextView
+                android:id="@+id/service_status"
+                style="@style/SettingsValue"
+                android:text="Unknown" />
+
+            <TextView
+                android:id="@+id/next_alarm_status"
+                style="@style/SettingsCaption"
+                android:text="No upcoming alarms" />
+
+            <Button
+                android:id="@+id/service_toggle"
+                style="@style/SettingsGhostButton"
+                android:text="Start service" />
+
+            <Switch
+                android:id="@+id/boot_toggle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Start on boot"
+                android:textSize="15sp"
+                android:textColor="@color/text_primary"
+                android:layout_marginTop="14dp" />
+        </LinearLayout>
+
+        <!-- ── PC pairing ──────────────────────────────────────────── -->
+        <LinearLayout style="@style/SettingsCard">
+
+            <TextView style="@style/SettingsHeading" android:text="PC" />
+
+            <TextView
+                android:id="@+id/secret_status"
+                style="@style/SettingsValue"
+                android:text="Not paired" />
+
+            <TextView
+                android:id="@+id/pc_link_status"
+                style="@style/SettingsCaption"
+                android:text="Disconnected" />
+
+            <Button
+                android:id="@+id/scan_secret"
+                style="@style/SettingsGhostButton"
+                android:text="Scan pairing QR" />
+        </LinearLayout>
+
+        <!-- ── ontoplano ───────────────────────────────────────────── -->
+        <LinearLayout style="@style/SettingsCard">
+
+            <TextView style="@style/SettingsHeading" android:text="ONTOPLANO" />
+
+            <TextView
+                android:id="@+id/ontoplano_account"
+                style="@style/SettingsValue"
+                android:text="Not connected" />
+
+            <TextView
+                android:id="@+id/ontoplano_detail"
+                style="@style/SettingsCaption"
+                android:text="Weigh-ins are published from the PC." />
+
+            <TextView
+                style="@style/SettingsLabel"
+                android:text="Turn tasks into alarms"
+                android:layout_marginTop="16dp" />
+
+            <TextView
+                style="@style/SettingsCaption"
+                android:text="Tasks whose title matches become read-only alarms." />
+
+            <EditText
+                android:id="@+id/ontoplano_pattern"
+                style="@style/SettingsInput"
+                android:hint="^acordar"
+                android:inputType="text"
+                android:singleLine="true" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:baselineAligned="false"
+                android:layout_marginTop="8dp">
+
+                <TextView
+                    android:id="@+id/ontoplano_kind_hard"
+                    style="@style/SettingsSegment"
+                    android:text="Scale" />
+
+                <TextView
+                    android:id="@+id/ontoplano_kind_soft"
+                    style="@style/SettingsSegment"
+                    android:text="A button"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/ontoplano_save"
+                style="@style/SettingsGhostButton"
+                android:text="Apply to PC" />
+
+            <TextView
+                android:id="@+id/ontoplano_status"
+                style="@style/SettingsCaption"
+                android:text="" />
+        </LinearLayout>
+
+        <!-- ── Scale ───────────────────────────────────────────────── -->
+        <LinearLayout style="@style/SettingsCard">
+
+            <TextView style="@style/SettingsHeading" android:text="SCALE" />
+
+            <TextView
+                style="@style/SettingsLabel"
+                android:text="A hard alarm stops when the scale reports" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:baselineAligned="false"
+                android:layout_marginTop="8dp">
+
+                <TextView
+                    android:id="@+id/scale_mode_weight"
+                    style="@style/SettingsSegment"
+                    android:text="Weight" />
+
+                <TextView
+                    android:id="@+id/scale_mode_bodyfat"
+                    style="@style/SettingsSegment"
+                    android:text="Body fat"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/scale_mode_caption"
+                style="@style/SettingsCaption"
+                android:text="Stops as soon as your weight settles. Socks are fine." />
+
+            <TextView
+                android:id="@+id/readings_status"
+                style="@style/SettingsCaption"
+                android:text="No weigh-ins recorded yet"
+                android:layout_marginTop="14dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:baselineAligned="false"
+                android:layout_marginTop="10dp">
+
+                <Button
+                    android:id="@+id/weigh_now"
+                    style="@style/SettingsGhostButtonInline"
+                    android:text="Listen for scale" />
+
+                <Button
+                    android:id="@+id/upload_now"
+                    style="@style/SettingsGhostButtonInline"
+                    android:text="Upload now"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- ── Home network ────────────────────────────────────────── -->
+        <LinearLayout style="@style/SettingsCard">
+
+            <TextView style="@style/SettingsHeading" android:text="HOME" />
+
+            <TextView
+                android:id="@+id/home_wifi_status"
+                style="@style/SettingsValue"
+                android:text="Not set" />
+
+            <TextView
+                android:id="@+id/home_wifi_caption"
+                style="@style/SettingsCaption"
+                android:text="Hard alarms only demand the scale on this network." />
+
+            <Button
+                android:id="@+id/set_home_wifi"
+                style="@style/SettingsGhostButton"
+                android:text="Use current wifi as home" />
+        </LinearLayout>
+
+        <!-- ── Permissions ─────────────────────────────────────────── -->
+        <LinearLayout style="@style/SettingsCard">
+
+            <TextView style="@style/SettingsHeading" android:text="PERMISSIONS" />
+
+            <TextView
+                android:id="@+id/permissions_status"
+                style="@style/SettingsValue"
+                android:text="Checking…" />
+
+            <Button
+                android:id="@+id/grant_permissions"
+                style="@style/SettingsGhostButton"
+                android:text="Grant permissions" />
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>

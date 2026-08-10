@@ -23,8 +23,12 @@ scale_name: "MIBFS"
 # BLE service UUID prefix for body composition
 scale_uuid_prefix: "0000181b"
 
-# BLE flag byte indicating a stable (synced) weight reading
-syncing_weight_flag: 0x26
+# BLE flag byte indicating a reading that should stop a hard alarm.
+#   0xa4 (164) - weight settled, no impedance reading (socks are fine)
+#   0x26 (38)  - impedance/body-fat reading complete (needs bare feet)
+# Only used when alarm_owner is "pc"; the phone chooses this in its own
+# Settings screen.
+syncing_weight_flag: 0xa4
 
 # Minimum weight (kg) to accept as a valid reading
 min_weight_kg: 68

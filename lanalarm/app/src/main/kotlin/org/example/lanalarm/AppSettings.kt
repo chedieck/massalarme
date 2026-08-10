@@ -49,8 +49,21 @@ object AppSettings {
     const val DEFAULT_PC_PORT = 8888
     const val DEFAULT_SCALE_NAME = "MIBFS"
 
-    /** 0xa4 — weight stabilised. 0xa6 additionally requires a barefoot impedance read. */
-    const val DEFAULT_STABLE_FLAG = 0xa4
+    /**
+     * Which scale advertisement satisfies a hard alarm.
+     *
+     * These are the two flags this scale actually emits, confirmed against the
+     * weight log: every `0x26` reading carries an impedance value and every
+     * `0xa4` reading does not. (Some documentation claims `0xa6` for the
+     * body-fat case; this hardware does not use it.)
+     *
+     * The choice is seasonal in practice — bare feet are needed for the
+     * impedance measurement, which is a lot to ask on a cold morning.
+     */
+    const val FLAG_WEIGHT_ONLY = 0xa4
+    const val FLAG_BODY_FAT = 0x26
+
+    const val DEFAULT_STABLE_FLAG = FLAG_WEIGHT_ONLY
     const val DEFAULT_MIN_WEIGHT_KG = 30f
 
     /** Advertisements closer together than this are one trip to the scale. */
@@ -76,6 +89,12 @@ object AppSettings {
 
     fun stableFlag(context: Context): Int =
         prefs(context).getInt(KEY_SCALE_STABLE_FLAG, DEFAULT_STABLE_FLAG)
+
+    fun setStableFlag(context: Context, flag: Int) {
+        prefs(context).edit().putInt(KEY_SCALE_STABLE_FLAG, flag).apply()
+    }
+
+    fun requiresBodyFat(context: Context): Boolean = stableFlag(context) == FLAG_BODY_FAT
 
     fun minWeightKg(context: Context): Float =
         prefs(context).getFloat(KEY_SCALE_MIN_WEIGHT, DEFAULT_MIN_WEIGHT_KG)

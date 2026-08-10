@@ -421,7 +421,7 @@ def _write_secret_png(encoded: str) -> Optional[Path]:
         qr.add_data(encoded)
         qr.make(fit=True)
         path = DATA_DIR / "pairing-qr.png"
-        qr.make_image(fill_color="black", back_color="white").save(path)
+        qr.make_image(fill_color="black", back_color="white").save(str(path))
         return path
     except Exception as exc:  # pillow missing, read-only dir, ...
         logger.debug("Could not write QR image: %s", exc)
@@ -876,6 +876,14 @@ def get_relevant_data(data: bytes) -> str:
 
 _store: Optional[WeighInStore] = None
 _sync_worker: Optional[SyncWorker] = None
+
+# Set when the phone changes the ontoplano rule, so the schedule loop can wake
+# early instead of waiting out its poll interval.
+_schedule_refresh: Optional[asyncio.Event] = None
+
+# Cached /api/v1/me result, so the status surface can name the account the token
+# belongs to rather than just saying "connected".
+_ontoplano_identity: dict = {}
 
 
 def get_store(cfg: Optional[dict] = None) -> WeighInStore:
@@ -1422,12 +1430,59 @@ async def _handle_sync_status(request: web.Request) -> web.Response:
     if not secret or request.query.get("key", "") != secret:
         return web.Response(status=403, text="Invalid key")
 
+    section = _current_cfg.get("ontoplano") or {}
     status = get_store(_current_cfg).status()
-    status["ontoplano_enabled"] = bool(
-        (_current_cfg.get("ontoplano") or {}).get("enabled", False)
-    )
+    status["ontoplano_enabled"] = bool(section.get("enabled", False))
+    status["ontoplano_base_url"] = section.get("base_url", "")
     status["halted"] = bool(_sync_worker is not None and _sync_worker.halted)
+
+    # Who the token belongs to. "Connected" on its own is not much use when the
+    # question is whether it is pointing at the right account.
+    if _ontoplano_identity:
+        status["ontoplano_user"] = _ontoplano_identity.get("user_id")
+        status["ontoplano_timezone"] = _ontoplano_identity.get("timezone")
+        status["ontoplano_scopes"] = _ontoplano_identity.get("scopes", [])
+
+    rules = (section.get("schedule") or {}).get("rules") or []
+    if rules:
+        match = rules[0].get("match") or {}
+        status["ontoplano_pattern"] = match.get("title", "")
+        status["ontoplano_kind"] = rules[0].get("kind", "hard")
+
     return web.json_response(status)
+
+
+async def _handle_weigh_ins(request: web.Request) -> web.Response:
+    """GET /weigh-ins?key=<secret>&limit=N — the weight history, for the app.
+
+    The PC holds the full record, including everything captured before the phone
+    took over sensing; the phone only has what it measured itself.
+    """
+    secret = _current_cfg.get("shared_secret", "")
+    if not secret or request.query.get("key", "") != secret:
+        return web.Response(status=403, text="Invalid key")
+
+    try:
+        limit = min(int(request.query.get("limit", 200)), 1000)
+    except ValueError:
+        limit = 200
+
+    weigh_ins = get_store(_current_cfg).latest(limit=limit)
+    return web.json_response(
+        {
+            "weigh_ins": [
+                {
+                    "external_id": w.external_id,
+                    "captured_at": utc_iso(w.captured_at),
+                    "weight_kg": round(w.weight_kg, 2),
+                    "impedance": w.impedance,
+                    "alarm_name": w.alarm_name,
+                    "source": w.source,
+                }
+                for w in weigh_ins
+            ]
+        }
+    )
 
 
 async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
@@ -1543,6 +1598,7 @@ async def _start_pc_server(cfg: dict) -> None:
     app.router.add_get("/alarms", _handle_alarms)
     app.router.add_get("/stop-alarm", _handle_stop_alarm)
     app.router.add_get("/sync-status", _handle_sync_status)
+    app.router.add_get("/weigh-ins", _handle_weigh_ins)
     app.router.add_post("/readings", _handle_readings)
     app.router.add_get("/ws", _handle_ws)
 
@@ -1799,7 +1855,6 @@ async def main_loop() -> None:
                 task.cancel()
 
 
-_schedule_refresh: Optional[asyncio.Event] = None
 
 
 def _apply_ontoplano_rule(pattern: str, kind: str) -> None:
@@ -1933,6 +1988,20 @@ async def _start_sync_worker(cfg: dict) -> Optional[asyncio.Task]:
 
     # Anything captured while sync was off or the daemon was down is still
     # queued; the worker drains it on its first pass.
+    global _ontoplano_identity
+    try:
+        _ontoplano_identity = await client.whoami()
+        logger.info(
+            "ontoplano account %s (%s), scopes: %s",
+            _ontoplano_identity.get("user_id"),
+            _ontoplano_identity.get("timezone"),
+            ", ".join(_ontoplano_identity.get("scopes", [])) or "none",
+        )
+    except ontoplano.OntoplanoError as exc:
+        # Not fatal: the queue still drains, and the status surface just has
+        # less to say about who we are talking to.
+        logger.warning("Could not identify the ontoplano account: %s", exc)
+
     pending = get_store(cfg).pending_count()
     if pending:
         logger.info("%d weigh-in(s) queued for ontoplano", pending)

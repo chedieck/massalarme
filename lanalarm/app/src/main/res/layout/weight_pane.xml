@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Weight history: the trend first, then the individual weigh-ins. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/weight_content"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/bg_dark"
+    android:padding="16dp">
+
+    <LinearLayout style="@style/SettingsCard">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:baselineAligned="false">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/weight_latest"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="—"
+                    android:textColor="@color/text_primary"
+                    android:textSize="40sp"
+                    android:fontFamily="sans-serif-light" />
+
+                <TextView
+                    android:id="@+id/weight_latest_when"
+                    style="@style/SettingsCaption"
+                    android:text="No weigh-ins yet" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/weight_trend"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textColor="@color/secondary_accent"
+                android:textSize="15sp"
+                android:gravity="end" />
+        </LinearLayout>
+
+        <org.example.lanalarm.WeightChartView
+            android:id="@+id/weight_chart"
+            android:layout_width="match_parent"
+            android:layout_height="170dp"
+            android:layout_marginTop="14dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:baselineAligned="false"
+            android:layout_marginTop="12dp">
+
+            <TextView
+                android:id="@+id/weight_range_30"
+                style="@style/SettingsSegment"
+                android:text="30 days" />
+
+            <TextView
+                android:id="@+id/weight_range_90"
+                style="@style/SettingsSegment"
+                android:text="90 days"
+                android:layout_marginStart="8dp" />
+
+            <TextView
+                android:id="@+id/weight_range_all"
+                style="@style/SettingsSegment"
+                android:text="All"
+                android:layout_marginStart="8dp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/weight_source"
+        style="@style/SettingsCaption"
+        android:text=""
+        android:layout_marginBottom="8dp" />
+
+    <ScrollView
+        android:id="@+id/weight_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <LinearLayout
+            android:id="@+id/weight_list"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </ScrollView>
+
+</LinearLayout>

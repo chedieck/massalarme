@@ -76,6 +76,28 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ontoplanoKindSoft: TextView
     private lateinit var ontoplanoSave: Button
     private lateinit var ontoplanoStatus: TextView
+    private lateinit var ontoplanoAccount: TextView
+    private lateinit var ontoplanoDetail: TextView
+    private lateinit var pcLinkStatus: TextView
+    private lateinit var homeWifiCaption: TextView
+    private lateinit var scaleModeWeight: TextView
+    private lateinit var scaleModeBodyFat: TextView
+    private lateinit var scaleModeCaption: TextView
+    private lateinit var tabWeight: TextView
+    private lateinit var weightContent: View
+    private lateinit var weightChart: WeightChartView
+    private lateinit var weightLatest: TextView
+    private lateinit var weightLatestWhen: TextView
+    private lateinit var weightTrend: TextView
+    private lateinit var weightSource: TextView
+    private lateinit var weightList: LinearLayout
+    private lateinit var weightRange30: TextView
+    private lateinit var weightRange90: TextView
+    private lateinit var weightRangeAll: TextView
+
+    private var weightEntries: List<WeightHistory.Entry> = emptyList()
+    private var weightRangeDays: Int = 90
+    private val background = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     private val wsStatusRunnable = object : Runnable {
         override fun run() {
@@ -86,7 +108,8 @@ class MainActivity : AppCompatActivity() {
 
     private enum class Tab {
         SETTINGS,
-        ALARMS
+        ALARMS,
+        WEIGHT
     }
 
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -155,6 +178,31 @@ class MainActivity : AppCompatActivity() {
         ontoplanoKindSoft = findViewById(R.id.ontoplano_kind_soft)
         ontoplanoSave = findViewById(R.id.ontoplano_save)
         ontoplanoStatus = findViewById(R.id.ontoplano_status)
+        ontoplanoAccount = findViewById(R.id.ontoplano_account)
+        ontoplanoDetail = findViewById(R.id.ontoplano_detail)
+        pcLinkStatus = findViewById(R.id.pc_link_status)
+        homeWifiCaption = findViewById(R.id.home_wifi_caption)
+        scaleModeWeight = findViewById(R.id.scale_mode_weight)
+        scaleModeBodyFat = findViewById(R.id.scale_mode_bodyfat)
+        scaleModeCaption = findViewById(R.id.scale_mode_caption)
+        tabWeight = findViewById(R.id.tab_weight)
+        weightContent = findViewById(R.id.weight_content)
+        weightChart = findViewById(R.id.weight_chart)
+        weightLatest = findViewById(R.id.weight_latest)
+        weightLatestWhen = findViewById(R.id.weight_latest_when)
+        weightTrend = findViewById(R.id.weight_trend)
+        weightSource = findViewById(R.id.weight_source)
+        weightList = findViewById(R.id.weight_list)
+        weightRange30 = findViewById(R.id.weight_range_30)
+        weightRange90 = findViewById(R.id.weight_range_90)
+        weightRangeAll = findViewById(R.id.weight_range_all)
+
+        tabWeight.setOnClickListener { selectTab(Tab.WEIGHT) }
+        scaleModeWeight.setOnClickListener { setScaleMode(AppSettings.FLAG_WEIGHT_ONLY) }
+        scaleModeBodyFat.setOnClickListener { setScaleMode(AppSettings.FLAG_BODY_FAT) }
+        weightRange30.setOnClickListener { setWeightRange(30) }
+        weightRange90.setOnClickListener { setWeightRange(90) }
+        weightRangeAll.setOnClickListener { setWeightRange(0) }
 
         setHomeWifiButton.setOnClickListener { captureHomeNetwork() }
         grantPermissionsButton.setOnClickListener { requestRuntimePermissions() }
@@ -241,15 +289,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateUI() {
         val running = AlarmService.instance != null
-        serviceStatus.text = if (running) "Service: Running" else "Service: Stopped"
-        serviceToggle.text = if (running) "Stop Service" else "Start Service"
+        serviceStatus.text = if (running) "Running" else "Stopped"
+        serviceToggle.text = if (running) "Stop service" else "Start service"
 
         val pcAddress = AppSettings.pcBaseUrl(this)
         secretStatus.text = when {
-            AppSettings.secret(this) == null -> "Not paired — scan the QR code"
-            pcAddress == null -> "Paired, but PC address unknown — rescan"
-            else -> "Paired with $pcAddress"
+            AppSettings.secret(this) == null -> "Not paired"
+            pcAddress == null -> "Paired, address unknown"
+            else -> pcAddress
         }
+        pcLinkStatus.text = if (AlarmService.wsConnected) "Connected" else "Disconnected"
+        refreshOntoplanoStatus()
 
         // Don't clobber what the user is part-way through typing.
         if (!ontoplanoPattern.hasFocus()) {
@@ -398,23 +448,46 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateSensingStatus() {
         nextAlarmStatus.text = AlarmScheduler.nextAlarmDescription(this)
+        renderScaleMode()
+        renderHomeNetwork()
+        renderPermissions()
+        renderReadings()
+    }
 
-        val home = HomeNetwork.status(this)
+    private fun renderHomeNetwork() {
         val configured = AppSettings.homeSsid(this)
-        homeWifiStatus.text = when {
-            configured == null -> "Home wifi: not set — hard alarms always apply"
-            home.isHome -> "Home wifi: $configured (currently home)"
-            else -> "Home wifi: $configured — ${home.reason}"
+        val home = HomeNetwork.status(this)
+
+        if (configured == null) {
+            homeWifiStatus.text = "Not set"
+            homeWifiCaption.text =
+                "Hard alarms apply everywhere until you set a home network."
+            setHomeWifiButton.visibility = View.VISIBLE
+            return
         }
 
+        homeWifiStatus.text = configured
+        if (home.isHome) {
+            homeWifiCaption.text = "You are on it now. Hard alarms apply here."
+            // Nothing to do from here, so the button would only be noise.
+            setHomeWifiButton.visibility = View.GONE
+        } else {
+            homeWifiCaption.text = "Currently ${home.reason}. Hard alarms fall back to a button."
+            setHomeWifiButton.visibility = View.VISIBLE
+        }
+    }
+
+    private fun renderPermissions() {
         val missing = missingRuntimePermissions()
         permissionsStatus.text = if (missing.isEmpty()) {
-            "Permissions: all granted"
+            "All granted"
         } else {
-            "Permissions: ${missing.size} missing — hard alarms will downgrade"
+            "${missing.size} missing — hard alarms will fall back to a button"
         }
         grantPermissionsButton.visibility = if (missing.isEmpty()) View.GONE else View.VISIBLE
+    }
 
+    private fun renderReadings() {
         val store = ReadingStore(this)
         val pending = try {
             store.pendingCount()
@@ -429,18 +502,111 @@ class MainActivity : AppCompatActivity() {
 
         readingsStatus.text = buildString {
             if (lastWeight > 0f && lastWeightAt != null) {
-                append("Last weigh-in: %.1f kg (%s)".format(lastWeight, lastWeightAt))
+                val at = WeightHistory.parseUtc(lastWeightAt)
+                append("Last weigh-in %.1f kg".format(lastWeight))
+                if (at != null) append(" · ").append(WeightHistory.formatWhen(at))
             } else {
                 append("No weigh-ins recorded yet")
             }
-            append("\n")
-            append(if (pending == 0) "All readings uploaded" else "$pending waiting to upload")
-            if (!lastError.isNullOrBlank()) append("\nLast error: $lastError")
+            if (pending > 0) append("\n$pending waiting to upload")
+            if (!lastError.isNullOrBlank()) append("\n").append(lastError)
         }
 
         weighNowButton.text =
             if (AlarmService.instance?.isScanningScale() == true) "Stop listening"
             else "Listen for scale"
+    }
+
+    /**
+     * Ask the PC who its ontoplano token belongs to.
+     *
+     * "Connected" alone is not much use when the question is whether it is
+     * pointing at the right account — which is exactly what went wrong after a
+     * token swap.
+     */
+    private fun refreshOntoplanoStatus() {
+        background.execute {
+            val status = fetchSyncStatus()
+            runOnUiThread { renderOntoplanoStatus(status) }
+        }
+    }
+
+    private fun fetchSyncStatus(): JSONObject? {
+        val secret = AppSettings.secret(this) ?: return null
+        val baseUrl = AppSettings.pcBaseUrl(this) ?: return null
+        return try {
+            val client = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(4, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+            val request = okhttp3.Request.Builder()
+                .url("$baseUrl/sync-status?key=$secret").get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) null
+                else JSONObject(response.body?.string().orEmpty())
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * A JSON null read through optString() comes back as the literal "null",
+     * which is how a stray "null" ended up rendered in the status card.
+     */
+    private fun JSONObject.stringOrNull(key: String): String? =
+        if (isNull(key)) null else optString(key).takeIf { it.isNotBlank() && it != "null" }
+
+    private fun renderOntoplanoStatus(status: JSONObject?) {
+        if (status == null) {
+            ontoplanoAccount.text = "Unknown"
+            ontoplanoDetail.text = "Could not reach the PC to ask."
+            return
+        }
+
+        val enabled = status.optBoolean("ontoplano_enabled", false)
+        val user = status.stringOrNull("ontoplano_user")
+        val timezone = status.stringOrNull("ontoplano_timezone")
+        val baseUrl = status.stringOrNull("ontoplano_base_url")
+        val scopes = status.optJSONArray("ontoplano_scopes")
+        val pending = status.optInt("pending", 0)
+        val synced = status.optInt("synced", 0)
+        val lastError = status.stringOrNull("last_error")
+
+        ontoplanoAccount.text = when {
+            !enabled -> "Sync is off"
+            user != null -> user
+            else -> "Connected"
+        }
+
+        ontoplanoDetail.text = buildString {
+            if (!enabled) {
+                append("Set ontoplano.enabled: true in the PC's config.yaml.")
+                return@buildString
+            }
+            baseUrl?.let { append(it) }
+            timezone?.let { if (isNotEmpty()) append(" · "); append(it) }
+            if (scopes != null && scopes.length() > 0) {
+                val list = (0 until scopes.length()).joinToString(", ") { scopes.optString(it) }
+                append("\n").append(list)
+            }
+            append("\n$synced published")
+            if (pending > 0) append(", $pending pending")
+            if (status.optBoolean("halted", false)) append(" · sync halted")
+            lastError?.let { append("\n").append(it) }
+        }
+
+        // The PC is authoritative for the rule; mirror it back so the two agree.
+        val pattern = status.optString("ontoplano_pattern")
+        if (pattern.isNotBlank() && !ontoplanoPattern.hasFocus() &&
+            ontoplanoPattern.text.toString() != pattern
+        ) {
+            ontoplanoPattern.setText(pattern)
+            AppSettings.setOntoplanoRule(
+                this, pattern, status.optString("ontoplano_kind", "hard")
+            )
+            renderOntoplanoRule()
+        }
     }
 
     private fun updateWsStatus() {
@@ -455,19 +621,138 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun selectTab(tab: Tab) {
-        val activeColor = ContextCompat.getColor(this, R.color.secondary_accent)
-        val inactiveColor = ContextCompat.getColor(this, R.color.text_muted)
-        if (tab == Tab.SETTINGS) {
-            settingsContent.visibility = View.VISIBLE
-            alarmsContent.visibility = View.GONE
-            tabSettings.setTextColor(activeColor)
-            tabAlarms.setTextColor(inactiveColor)
+        val active = ContextCompat.getColor(this, R.color.secondary_accent)
+        val inactive = ContextCompat.getColor(this, R.color.text_muted)
+
+        settingsContent.visibility = if (tab == Tab.SETTINGS) View.VISIBLE else View.GONE
+        alarmsContent.visibility = if (tab == Tab.ALARMS) View.VISIBLE else View.GONE
+        weightContent.visibility = if (tab == Tab.WEIGHT) View.VISIBLE else View.GONE
+
+        tabSettings.setTextColor(if (tab == Tab.SETTINGS) active else inactive)
+        tabAlarms.setTextColor(if (tab == Tab.ALARMS) active else inactive)
+        tabWeight.setTextColor(if (tab == Tab.WEIGHT) active else inactive)
+
+        when (tab) {
+            Tab.ALARMS -> renderAlarms()
+            Tab.WEIGHT -> loadWeightHistory()
+            Tab.SETTINGS -> updateUI()
+        }
+    }
+
+    // ─── Weight history ──────────────────────────────────────────────
+
+    private fun setWeightRange(days: Int) {
+        weightRangeDays = days
+        renderWeightHistory()
+    }
+
+    private fun loadWeightHistory() {
+        background.execute {
+            val result = WeightHistory.load(this)
+            runOnUiThread {
+                weightEntries = result.entries
+                weightSource.text = when {
+                    result.error != null -> result.error
+                    result.entries.isEmpty() -> "No weigh-ins recorded yet"
+                    result.fromPc -> "${result.entries.size} weigh-ins from the PC"
+                    else -> "${result.entries.size} weigh-ins from this phone"
+                }
+                renderWeightHistory()
+            }
+        }
+    }
+
+    private fun renderWeightHistory() {
+        weightRange30.isSelected = weightRangeDays == 30
+        weightRange90.isSelected = weightRangeDays == 90
+        weightRangeAll.isSelected = weightRangeDays == 0
+
+        val cutoff = if (weightRangeDays == 0) 0L
+        else System.currentTimeMillis() - weightRangeDays * 86_400_000L
+        val visible = weightEntries.filter { it.atMillis >= cutoff }
+
+        weightChart.setPoints(visible.map { WeightChartView.Point(it.atMillis, it.weightKg) })
+        weightTrend.text = WeightHistory.describeTrend(visible)
+
+        val newest = weightEntries.maxByOrNull { it.atMillis }
+        if (newest == null) {
+            weightLatest.text = "—"
+            weightLatestWhen.text = "No weigh-ins yet"
         } else {
-            settingsContent.visibility = View.GONE
-            alarmsContent.visibility = View.VISIBLE
-            tabSettings.setTextColor(inactiveColor)
-            tabAlarms.setTextColor(activeColor)
-            renderAlarms()
+            weightLatest.text = String.format(Locale.US, "%.1f kg", newest.weightKg)
+            weightLatestWhen.text = WeightHistory.formatWhen(newest.atMillis)
+        }
+
+        weightList.removeAllViews()
+        visible.sortedByDescending { it.atMillis }.take(60).forEach { entry ->
+            weightList.addView(buildWeightRow(entry))
+        }
+    }
+
+    private fun buildWeightRow(entry: WeightHistory.Entry): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundResource(R.drawable.card_bg)
+            setPadding(dpToPx(14), dpToPx(12), dpToPx(14), dpToPx(12))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dpToPx(8) }
+        }
+
+        val left = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        left.addView(TextView(this).apply {
+            text = String.format(Locale.US, "%.2f kg", entry.weightKg)
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
+            textSize = 18f
+        })
+        left.addView(TextView(this).apply {
+            text = buildString {
+                append(WeightHistory.formatWhen(entry.atMillis))
+                entry.alarmName?.let { append(" · ").append(it) }
+            }
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_muted))
+            textSize = 12f
+        })
+        row.addView(left)
+
+        // Impedance present means the body-fat reading actually completed.
+        entry.impedance?.let { ohms ->
+            row.addView(TextView(this).apply {
+                text = String.format(Locale.US, "%.0f Ω", ohms)
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_muted))
+                textSize = 12f
+            })
+        }
+
+        return row
+    }
+
+    // ─── Scale mode ──────────────────────────────────────────────────
+
+    private fun setScaleMode(flag: Int) {
+        AppSettings.setStableFlag(this, flag)
+        renderScaleMode()
+        Toast.makeText(
+            this,
+            if (flag == AppSettings.FLAG_BODY_FAT) "Hard alarms now wait for the body-fat reading"
+            else "Hard alarms now stop as soon as your weight settles",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun renderScaleMode() {
+        val bodyFat = AppSettings.requiresBodyFat(this)
+        scaleModeWeight.isSelected = !bodyFat
+        scaleModeBodyFat.isSelected = bodyFat
+        scaleModeCaption.text = if (bodyFat) {
+            "Waits for the impedance reading, so the alarm keeps going until the " +
+                "scale has your body fat. Needs bare feet."
+        } else {
+            "Stops as soon as your weight settles. Socks are fine, but no body-fat reading."
         }
     }
 

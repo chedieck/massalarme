@@ -182,16 +182,23 @@ indicates measurement state:
 |------|---------|
 | `0x84` | Idle — scale broadcasting last known weight, no one on it |
 | `0x24` | Measuring — someone stepped on, weight still fluctuating |
-| `0xa4` | Weight stabilized — locked in, waiting for impedance |
-| `0xa6` | Impedance done — full body composition measurement complete |
+| `0xa4` | Weight stabilized — no impedance reading (socks are fine) |
+| `0x26` | Impedance done — full body composition measurement complete |
 
-After you step off, the scale keeps spamming `0xa4` or `0xa6` for a while
+After you step off, the scale keeps spamming `0xa4` or `0x26` for a while
 (broadcasting the result to any listening device).
 
-Set `syncing_weight_flag` in `config.yaml` to the decimal value of the flag
-that should stop the alarm:
-- `164` (0xa4) — stop on stable weight (no bodyfat needed, works with socks)
-- `166` (0xa6) — stop only after full impedance reading (barefoot required)
+Pick which one stops a hard alarm in the app, under **Settings → Scale**:
+
+- **Weight** — `164` (0xa4), stops on stable weight, socks are fine
+- **Body fat** — `38` (0x26), waits for the impedance reading, needs bare feet
+
+It is a seasonal choice in practice. The PC's `syncing_weight_flag` still exists
+for `alarm_owner: pc`, and the app's setting is what matters otherwise.
+
+Note this scale emits `0x26` for the impedance case, not the `0xa6` some
+documentation claims — verified against the weight log, where every `0x26` row
+carries an impedance value and every `0xa4` row does not.
 
 ## Android setup
 
@@ -219,6 +226,15 @@ On the phone:
 The service runs in the background — you don't need to keep the app open. Use
 **Listen for scale** to record a weigh-in outside an alarm, or to check the scale
 is reachable at all.
+
+### Tabs
+
+- **Settings** — service, PC pairing, ontoplano account, scale mode, home wifi,
+  permissions. One card per concern.
+- **Alarms** — the schedule. Tap an alarm to edit; ontoplano-derived ones carry a
+  badge and are read-only.
+- **Weight** — your weigh-in history as a chart plus a list, read from the PC
+  (which has the whole record) and falling back to this phone's own readings.
 
 ### Assets
 
