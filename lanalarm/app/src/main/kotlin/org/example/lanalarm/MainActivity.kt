@@ -272,6 +272,13 @@ class MainActivity : AppCompatActivity() {
         updateUI()
         renderAlarms()
         ensureOverlayPermission()
+
+        // The service now backs off to a quarter of an hour between reconnect
+        // attempts rather than retrying every fifteen seconds, so opening the
+        // app is the user's way of saying "try now" — which is exactly what
+        // someone does when they want to see the PC link come up.
+        AlarmService.instance?.let { if (!AlarmService.wsConnected) it.reconnectWebSocketNow() }
+
         updateWsStatus()
         wsStatus.post(wsStatusRunnable)
     }

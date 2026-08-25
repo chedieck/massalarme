@@ -70,7 +70,11 @@ object HomeNetwork {
         return bssid.takeIf { it.isNotBlank() && it != "02:00:00:00:00:00" }
     }
 
-    private fun isWifiConnected(context: Context): Boolean {
+    /**
+     * Is there a wifi link at all? The PC lives on the LAN, so anything that
+     * talks to it is pointless without one — including retrying the websocket.
+     */
+    fun isWifiConnected(context: Context): Boolean {
         val connectivity = context.getSystemService(ConnectivityManager::class.java)
             ?: return false
         val network = connectivity.activeNetwork ?: return false

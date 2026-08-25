@@ -9,6 +9,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -36,7 +38,6 @@ class AlarmService : Service() {
         private const val TAG = "AlarmService"
         private const val NOTIFICATION_SERVICE_ID = 1
         private const val NOTIFICATION_ALARM_ID = 2
-        private const val NOTIFICATION_WS_ID = 3
         private const val NOTIFICATION_WEIGHT_ID = 4
         const val PREFS_NAME = AppSettings.PREFS_NAME
         const val KEY_SECRET = AppSettings.KEY_SECRET
@@ -48,15 +49,36 @@ class AlarmService : Service() {
         const val ACTION_START_ALARM = "org.example.lanalarm.START_ALARM"
         const val ACTION_UPLOAD_READINGS = "org.example.lanalarm.UPLOAD_READINGS"
         private const val DEFAULT_PC_PORT = AppSettings.DEFAULT_PC_PORT
-        private const val WS_RECONNECT_MS = 15_000L
-        private const val WS_PING_INTERVAL_MS = 30_000L
+
+        /**
+         * Reconnect backoff. The PC is a desktop that spends most of the day
+         * asleep, so a failed connection is the normal case, not an incident.
+         * A flat 15s retry meant ~5,700 pointless TCP connects a day, each one
+         * waking the wifi radio and the CPU; it was the single largest thing
+         * this app did with the user's battery. Back off to a quarter hour and
+         * let the network callback below cut the wait short when wifi returns.
+         */
+        private const val WS_RECONNECT_MIN_MS = 15_000L
+        private const val WS_RECONNECT_MAX_MS = 15 * 60 * 1000L
+
+        /**
+         * OkHttp's own keep-alive, which runs on its connection pool rather than
+         * a handler chain on the main thread and drops the socket by itself when
+         * a pong does not come back.
+         */
+        private const val WS_PING_INTERVAL_SEC = 60L
 
         /** Hard alarms use the siren; soft ones should not wake the neighbours. */
         private const val ASSET_HARD_ALARM = "trombetas.mp3"
         private const val ASSET_SOFT_ALARM = "soft.mp3"
 
-        /** Give up scanning for the scale eventually, so BLE is not left running. */
-        private const val SCALE_SCAN_TIMEOUT_MS = 30 * 60 * 1000L
+        /**
+         * Give up scanning for the scale eventually, so BLE is not left running.
+         * Six minutes, not thirty: someone who is going to weigh in does it as
+         * soon as the alarm stops, and the other twenty-four minutes were pure
+         * radio burn.
+         */
+        private const val SCALE_SCAN_TIMEOUT_MS = 6 * 60 * 1000L
 
         @Volatile
         var instance: AlarmService? = null
@@ -95,42 +117,16 @@ class AlarmService : Service() {
     private var wsClient: WebSocket? = null
     private val okHttp = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.SECONDS)
+        .pingInterval(WS_PING_INTERVAL_SEC, TimeUnit.SECONDS)
         .build()
     private var wsReconnectScheduled = false
+    private var wsBackoffMs = WS_RECONNECT_MIN_MS
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var lastNotifiedWsState: Boolean? = null
 
     private lateinit var scaleScanner: ScaleScanner
     private val uploadExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var scanTimeoutRunnable: Runnable? = null
-
-    private val wsPingRunnable = object : Runnable {
-        override fun run() {
-            val ws = wsClient
-            if (ws != null && wsConnected) {
-                try {
-                    // OkHttp uses pong frames internally; sending empty string tests the pipe
-                    val ok = ws.send("")
-                    if (!ok) {
-                        Log.w(TAG, "WS: ping send failed, forcing reconnect")
-                        wsConnected = false
-                        notifyWsStatus(false)
-                        ws.cancel()
-                        wsClient = null
-                        scheduleReconnect()
-                        return
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "WS: ping exception: ${e.message}, forcing reconnect")
-                    wsConnected = false
-                    notifyWsStatus(false)
-                    ws.cancel()
-                    wsClient = null
-                    scheduleReconnect()
-                    return
-                }
-            }
-            mainHandler.postDelayed(this, WS_PING_INTERVAL_MS)
-        }
-    }
 
     private val volumeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -157,6 +153,7 @@ class AlarmService : Service() {
         httpServer?.start()
         Log.i(TAG, "HTTP server started on port 8080")
 
+        registerNetworkCallback()
         connectWebSocket()
 
         // The phone owns the schedule now: register the next alarm as soon as
@@ -291,8 +288,13 @@ class AlarmService : Service() {
         }
     }
 
-    fun startScaleScan(): Boolean {
-        if (!scaleScanner.start(scaleListener)) return false
+    /**
+     * @param highPriority full-duty scanning, for the seconds an alarm is
+     *   ringing and the user is stood in front of the scale waiting for it to
+     *   shut up. Manual listening uses the cheaper mode.
+     */
+    fun startScaleScan(highPriority: Boolean = false): Boolean {
+        if (!scaleScanner.start(scaleListener, highPriority)) return false
 
         // Scanning has actually begun, which means the Bluetooth permission is
         // held, which is exactly when we are allowed to claim this type.
@@ -353,9 +355,18 @@ class AlarmService : Service() {
         val pcIp = prefs.getString(KEY_PC_IP, null)
         val secret = prefs.getString(KEY_SECRET, null)
 
+        // Unpaired is not a transient failure — there is nothing to retry until
+        // the user scans a QR code, and that path calls reconnectWebSocketNow().
         if (pcIp.isNullOrBlank() || secret.isNullOrBlank()) {
-            Log.d(TAG, "WS: no PC IP or secret yet, will retry in ${WS_RECONNECT_MS / 1000}s")
-            scheduleReconnect()
+            Log.d(TAG, "WS: not paired with a PC yet, staying idle")
+            return
+        }
+
+        // The PC is a LAN peer. Off wifi there is no route to it, so a connect
+        // attempt can only burn the mobile radio to reach a private address.
+        // The network callback wakes us the moment wifi is back.
+        if (!HomeNetwork.isWifiConnected(this)) {
+            Log.d(TAG, "WS: no wifi, staying idle until the network returns")
             return
         }
 
@@ -369,9 +380,8 @@ class AlarmService : Service() {
                 Log.i(TAG, "WS: connected")
                 wsConnected = true
                 wsReconnectScheduled = false
+                wsBackoffMs = WS_RECONNECT_MIN_MS
                 notifyWsStatus(true)
-                mainHandler.removeCallbacks(wsPingRunnable)
-                mainHandler.postDelayed(wsPingRunnable, WS_PING_INTERVAL_MS)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -381,7 +391,6 @@ class AlarmService : Service() {
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 Log.i(TAG, "WS: server closing ($code: $reason)")
                 wsConnected = false
-                mainHandler.removeCallbacks(wsPingRunnable)
                 notifyWsStatus(false)
                 webSocket.close(1000, null)
                 scheduleReconnect()
@@ -390,7 +399,6 @@ class AlarmService : Service() {
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "WS: connection failed: ${t.message}")
                 wsConnected = false
-                mainHandler.removeCallbacks(wsPingRunnable)
                 notifyWsStatus(false)
                 scheduleReconnect()
             }
@@ -499,10 +507,22 @@ class AlarmService : Service() {
         nm.notify(NOTIFICATION_WEIGHT_ID, notification)
     }
 
+    /**
+     * Book the next attempt, doubling the wait each time up to a quarter hour.
+     *
+     * Jitter keeps a phone that has just come back onto wifi from hammering the
+     * PC in lockstep with whatever else woke up at the same moment.
+     */
     private fun scheduleReconnect() {
         if (wsReconnectScheduled) return
         wsReconnectScheduled = true
-        mainHandler.postDelayed(wsReconnectRunnable, WS_RECONNECT_MS)
+
+        val jitter = (wsBackoffMs / 4).coerceAtLeast(1L)
+        val delay = wsBackoffMs + (0 until jitter).random()
+        wsBackoffMs = (wsBackoffMs * 2).coerceAtMost(WS_RECONNECT_MAX_MS)
+
+        Log.d(TAG, "WS: next attempt in ${delay / 1000}s")
+        mainHandler.postDelayed(wsReconnectRunnable, delay)
     }
 
     private val wsReconnectRunnable = Runnable {
@@ -514,40 +534,79 @@ class AlarmService : Service() {
         wsClient?.cancel()
         wsClient = null
         mainHandler.removeCallbacks(wsReconnectRunnable)
-        mainHandler.removeCallbacks(wsPingRunnable)
         wsReconnectScheduled = false
+        wsBackoffMs = WS_RECONNECT_MIN_MS
         connectWebSocket()
     }
 
-    private fun notifyWsStatus(connected: Boolean) {
-        val nm = getSystemService(NotificationManager::class.java)
-        if (connected) {
-            val notification = NotificationCompat.Builder(this, App.CHANNEL_SERVICE)
-                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-                .setContentTitle("Massalarme")
-                .setContentText("Connected to PC")
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setAutoCancel(true)
-                .build()
-            nm.notify(NOTIFICATION_WS_ID, notification)
-        } else {
-            val notification = NotificationCompat.Builder(this, App.CHANNEL_SERVICE)
-                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-                .setContentTitle("Massalarme")
-                .setContentText("Disconnected from PC — retrying...")
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                .setOngoing(true)
-                .build()
-            nm.notify(NOTIFICATION_WS_ID, notification)
+    /**
+     * Watch for wifi coming and going.
+     *
+     * This is what makes the long backoff above safe: rather than polling for a
+     * network that is not there, the service sleeps and lets the system say when
+     * something changed. Reconnecting is then immediate instead of up to fifteen
+     * minutes late.
+     */
+    private fun registerNetworkCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                mainHandler.post {
+                    if (wsConnected) return@post
+                    if (!HomeNetwork.isWifiConnected(this@AlarmService)) return@post
+                    Log.i(TAG, "Wifi available, reconnecting WS")
+                    reconnectWebSocketNow()
+                }
+            }
+
+            override fun onLost(network: Network) {
+                Log.i(TAG, "Network lost, dropping WS until it returns")
+                mainHandler.post {
+                    mainHandler.removeCallbacks(wsReconnectRunnable)
+                    wsReconnectScheduled = false
+                    wsConnected = false
+                    wsClient?.cancel()
+                    wsClient = null
+                    notifyWsStatus(false)
+                }
+            }
         }
+        networkCallback = callback
+        runCatching { cm.registerDefaultNetworkCallback(callback) }
+            .onFailure {
+                Log.w(TAG, "Could not watch the network: ${it.message}")
+                networkCallback = null
+            }
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        networkCallback?.let { runCatching { cm?.unregisterNetworkCallback(it) } }
+        networkCallback = null
+    }
+
+    /**
+     * Reflect the link state in the one notification the service already owns.
+     *
+     * This used to post a second, ongoing notification on every single failure.
+     * At a retry every fifteen seconds that was thousands of notification posts
+     * a day, each waking SystemUI to re-render — which is the likeliest reason
+     * the phone stuttered on unlock. Only real transitions are worth reporting.
+     */
+    private fun notifyWsStatus(connected: Boolean) {
+        if (lastNotifiedWsState == connected) return
+        lastNotifiedWsState = connected
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_SERVICE_ID, buildServiceNotification())
     }
 
     // ─── HTTP server (for PC → phone commands) ──────────────────────
 
     private fun buildServiceNotification(): Notification {
+        val link = if (wsConnected) "Connected to PC" else "PC not reachable"
         return NotificationCompat.Builder(this, App.CHANNEL_SERVICE)
             .setContentTitle("Massalarme running")
-            .setContentText("Waiting for alarm trigger")
+            .setContentText("Waiting for alarm trigger · $link")
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -710,7 +769,7 @@ class AlarmService : Service() {
         startAlarmPlayback(if (effectivelyHard) ASSET_HARD_ALARM else ASSET_SOFT_ALARM)
 
         if (effectivelyHard) {
-            if (!startScaleScan()) {
+            if (!startScaleScan(highPriority = true)) {
                 // Could not start scanning after all. Rather than trap the user,
                 // fall back to the soft path — the passphrase still works either way.
                 Log.e(TAG, "Scale scan failed to start — falling back to soft dismissal")
@@ -867,6 +926,16 @@ class AlarmService : Service() {
 
         dismissAlarmNotification()
 
+        // Release the radio. A hard alarm turns the scanner on, and until now
+        // nothing turned it off unless the scale itself completed a weigh-in —
+        // so dismissing with the passphrase left an unfiltered BLE scan running
+        // for the full timeout, every single morning. An open session is the one
+        // exception: the scale is still settling and its final reading is the
+        // one worth keeping, so let commitSession() stop the scan when it lands.
+        if (scaleScanner.isScanning() && !scaleScanner.hasOpenSession()) {
+            stopScaleScan()
+        }
+
         if (sendDismiss) {
             sendWsMessage(JSONObject().apply { put("type", "alarm_dismissed") }.toString())
         }
@@ -894,7 +963,10 @@ class AlarmService : Service() {
             override fun run() {
                 if (!volumeGuardRunning) return
                 enforceMaxVolume()
-                mainHandler.postDelayed(this, 50)
+                // The VOLUME_CHANGED_ACTION receiver above does the real work;
+                // this is only a backstop for volume changes that arrive without
+                // a broadcast. Twenty main-thread wakeups a second was overkill.
+                mainHandler.postDelayed(this, 500)
             }
         })
     }
@@ -916,10 +988,8 @@ class AlarmService : Service() {
     override fun onDestroy() {
         instance = null
         wsConnected = false
-        mainHandler.removeCallbacks(wsPingRunnable)
         mainHandler.removeCallbacks(wsReconnectRunnable)
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.cancel(NOTIFICATION_WS_ID)
+        unregisterNetworkCallback()
         wsClient?.cancel()
         wsClient = null
         httpServer?.stop()

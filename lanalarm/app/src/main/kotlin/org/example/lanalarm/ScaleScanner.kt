@@ -96,7 +96,20 @@ class ScaleScanner(private val context: Context) {
 
     fun isScanning(): Boolean = scanning
 
-    fun start(listener: ScaleListener): Boolean {
+    /**
+     * Is the user mid-weigh-in? The session is only worth the radio while the
+     * scale is still talking, and it must not be cut short at the moment the
+     * alarm goes quiet — the first stable reading is not the final one.
+     */
+    fun hasOpenSession(): Boolean = sessionReadings.isNotEmpty()
+
+    /**
+     * @param highPriority scan at full duty cycle. Worth it while an alarm is
+     *   ringing and the user is waiting for it to stop; ruinous for the battery
+     *   the rest of the time, where a quarter-duty scan finds the same scale a
+     *   second or two later and nobody notices.
+     */
+    fun start(listener: ScaleListener, highPriority: Boolean): Boolean {
         if (scanning) {
             this.listener = listener
             return true
@@ -125,14 +138,17 @@ class ScaleScanner(private val context: Context) {
         // matchesPartialData), and scanning is bounded to alarm windows anyway.
         val filters = emptyList<ScanFilter>()
         val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setScanMode(
+                if (highPriority) ScanSettings.SCAN_MODE_LOW_LATENCY
+                else ScanSettings.SCAN_MODE_BALANCED
+            )
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
             .build()
 
         return try {
             scanner?.startScan(filters, settings, scanCallback)
             scanning = true
-            Log.i(TAG, "BLE scan started")
+            Log.i(TAG, "BLE scan started (highPriority=$highPriority)")
             true
         } catch (e: SecurityException) {
             Log.e(TAG, "startScan denied: ${e.message}")
