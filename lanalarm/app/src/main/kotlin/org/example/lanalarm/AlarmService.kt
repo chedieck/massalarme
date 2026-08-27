@@ -46,6 +46,12 @@ class AlarmService : Service() {
         const val KEY_PC_IP = AppSettings.KEY_PC_IP
         const val KEY_PC_PORT = AppSettings.KEY_PC_PORT
         const val ACTION_ALARM_STOPPED = "org.example.lanalarm.ALARM_STOPPED"
+
+        /**
+         * The stored schedule changed without the UI asking. Anything showing
+         * alarms has to redraw, or it keeps displaying what it read last.
+         */
+        const val ACTION_ALARMS_CHANGED = "org.example.lanalarm.ALARMS_CHANGED"
         const val ACTION_START_ALARM = "org.example.lanalarm.START_ALARM"
         const val ACTION_UPLOAD_READINGS = "org.example.lanalarm.UPLOAD_READINGS"
         private const val DEFAULT_PC_PORT = AppSettings.DEFAULT_PC_PORT
@@ -411,19 +417,7 @@ class AlarmService : Service() {
             when (json.optString("type")) {
                 "alarms" -> {
                     val remoteAlarms = json.optJSONObject("data") ?: return
-                    val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                    val localAlarms = prefs.getString(KEY_ALARMS, null)
-                        ?.let { runCatching { JSONObject(it) }.getOrNull() }
-                        ?: JSONObject().apply {
-                            put("version", 2)
-                            put("alarms", JSONArray())
-                        }
-                    val mergedAlarms = mergeAlarms(localAlarms, remoteAlarms)
-
-                    prefs.edit()
-                        .putString(KEY_ALARMS, mergedAlarms.toString())
-                        .putLong(KEY_LAST_SYNC, System.currentTimeMillis())
-                        .apply()
+                    val mergedAlarms = applyRemoteAlarms(remoteAlarms)
 
                     sendWsMessage(
                         JSONObject().apply {
@@ -431,9 +425,6 @@ class AlarmService : Service() {
                             put("data", mergedAlarms)
                         }.toString()
                     )
-                    // The phone fires its own alarms, so a schedule change has to
-                    // reach AlarmManager or the edit silently does nothing.
-                    AlarmScheduler.rescheduleNext(this)
                     Log.i(TAG, "WS: alarms merged with PC")
                 }
                 "weight_update" -> {
@@ -450,49 +441,33 @@ class AlarmService : Service() {
         }
     }
 
-    private fun mergeAlarms(local: JSONObject, remote: JSONObject): JSONObject {
-        val mergedById = linkedMapOf<String, JSONObject>()
-
-        fun copyAlarm(alarm: JSONObject): JSONObject = JSONObject(alarm.toString())
-
-        fun mergeFrom(source: JSONObject, replaceIfNewer: Boolean) {
-            val alarms = source.optJSONArray("alarms") ?: JSONArray()
-            for (i in 0 until alarms.length()) {
-                val alarm = alarms.optJSONObject(i) ?: continue
-                val id = alarm.optString("id")
-                if (id.isBlank()) continue
-
-                val candidate = copyAlarm(alarm)
-                val existing = mergedById[id]
-                if (existing == null) {
-                    mergedById[id] = candidate
-                    continue
-                }
-
-                if (replaceIfNewer) {
-                    val existingUpdatedAt = existing.optLong("updated_at", Long.MIN_VALUE)
-                    val candidateUpdatedAt = candidate.optLong("updated_at", Long.MIN_VALUE)
-                    if (candidateUpdatedAt > existingUpdatedAt) {
-                        mergedById[id] = candidate
-                    }
-                }
+    /**
+     * Apply a schedule that arrived from the PC.
+     *
+     * Both inbound paths (the websocket and `/sync-alarms`) used to inline this,
+     * and neither told the UI that storage had changed underneath it — so an
+     * open MainActivity kept rendering the schedule as it was when the tab was
+     * last drawn. Rebooking AlarmManager and announcing the change are not
+     * optional extras here; they are the whole point of accepting the message.
+     */
+    private fun applyRemoteAlarms(remoteAlarms: JSONObject): JSONObject {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val localAlarms = prefs.getString(KEY_ALARMS, null)
+            ?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?: JSONObject().apply {
+                put("version", 2)
+                put("alarms", JSONArray())
             }
-        }
 
-        mergeFrom(local, replaceIfNewer = false)
-        mergeFrom(remote, replaceIfNewer = true)
+        val merged = AlarmSchedule.merge(localAlarms, remoteAlarms)
+        prefs.edit()
+            .putString(KEY_ALARMS, merged.toString())
+            .putLong(KEY_LAST_SYNC, System.currentTimeMillis())
+            .apply()
 
-        val cutoffMs = System.currentTimeMillis() - (30L * 86400 * 1000)
-        val pruned = mergedById.values.filter { alarm ->
-            !(alarm.optBoolean("deleted", false) && alarm.optLong("updated_at", Long.MAX_VALUE) < cutoffMs)
-        }
-
-        return JSONObject().apply {
-            put("version", 2)
-            put("alarms", JSONArray().apply {
-                pruned.forEach { put(it) }
-            })
-        }
+        AlarmScheduler.rescheduleNext(this)
+        sendBroadcast(Intent(ACTION_ALARMS_CHANGED).setPackage(packageName))
+        return merged
     }
 
     private fun showWeightNotification(weightKg: Double) {
@@ -682,21 +657,7 @@ class AlarmService : Service() {
                     try {
                         session.parseBody(files)
                         val body = files["postData"] ?: ""
-                        val remoteAlarms = JSONObject(body)
-                        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                        val localAlarms = prefs.getString(KEY_ALARMS, null)
-                            ?.let { runCatching { JSONObject(it) }.getOrNull() }
-                            ?: JSONObject().apply {
-                                put("version", 2)
-                                put("alarms", JSONArray())
-                            }
-                        val mergedAlarms = mergeAlarms(localAlarms, remoteAlarms)
-
-                        prefs.edit()
-                            .putString(KEY_ALARMS, mergedAlarms.toString())
-                            .putLong(KEY_LAST_SYNC, System.currentTimeMillis())
-                            .apply()
-                        AlarmScheduler.rescheduleNext(this@AlarmService)
+                        applyRemoteAlarms(JSONObject(body))
                         newFixedLengthResponse("Alarms synced")
                     } catch (e: Exception) {
                         Log.w(TAG, "Alarm sync failed: ${e.message}")

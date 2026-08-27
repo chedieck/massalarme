@@ -26,6 +26,9 @@ object AlarmSchedule {
     const val KIND_HARD = "hard"
     const val KIND_SOFT = "soft"
 
+    /** Matches `_prune_old_tombstones(max_age_days=30)` on the PC. */
+    const val TOMBSTONE_MAX_AGE_MS = 30L * 86_400 * 1000
+
     val WEEKDAYS = listOf(
         "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
     )
@@ -183,6 +186,65 @@ object AlarmSchedule {
         return root.apply {
             put("version", 2)
             put("alarms", array)
+        }
+    }
+
+    /**
+     * Merge the phone's schedule with the PC's, per alarm id.
+     *
+     * Last write wins on `updated_at`, and a tie keeps the incumbent — the copy
+     * already held locally. Both sides must agree on that rule or an edit can
+     * ping-pong between them forever; `alarm_manager.merge_alarms` implements
+     * the same one, and `MergeTest` pins the two together.
+     *
+     * Tombstones are kept so a deletion propagates instead of the alarm being
+     * resurrected by the next sync, and pruned once they are older than
+     * [TOMBSTONE_MAX_AGE_MS] so the schedule does not grow without bound.
+     *
+     * This lived inside AlarmService, where it could not be tested at all —
+     * which is how the sync path went unverified while it decided whether the
+     * user's alarm still existed.
+     */
+    fun merge(
+        local: JSONObject,
+        remote: JSONObject,
+        now: Long = System.currentTimeMillis()
+    ): JSONObject {
+        val mergedById = linkedMapOf<String, JSONObject>()
+
+        fun mergeFrom(source: JSONObject, replaceIfNewer: Boolean) {
+            val alarms = source.optJSONArray("alarms") ?: JSONArray()
+            for (i in 0 until alarms.length()) {
+                val alarm = alarms.optJSONObject(i) ?: continue
+                val id = alarm.optString("id")
+                if (id.isBlank()) continue
+
+                val candidate = JSONObject(alarm.toString())
+                val existing = mergedById[id]
+                if (existing == null) {
+                    mergedById[id] = candidate
+                    continue
+                }
+                if (!replaceIfNewer) continue
+
+                val existingAt = existing.optLong("updated_at", Long.MIN_VALUE)
+                val candidateAt = candidate.optLong("updated_at", Long.MIN_VALUE)
+                if (candidateAt > existingAt) mergedById[id] = candidate
+            }
+        }
+
+        mergeFrom(local, replaceIfNewer = false)
+        mergeFrom(remote, replaceIfNewer = true)
+
+        val cutoffMs = now - TOMBSTONE_MAX_AGE_MS
+        val pruned = mergedById.values.filter { alarm ->
+            !(alarm.optBoolean("deleted", false) &&
+                alarm.optLong("updated_at", Long.MAX_VALUE) < cutoffMs)
+        }
+
+        return JSONObject().apply {
+            put("version", 2)
+            put("alarms", JSONArray().apply { pruned.forEach { put(it) } })
         }
     }
 

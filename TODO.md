@@ -85,8 +85,9 @@ The client in `ontoplano.py` already covers most of `docs/PLUGINS.md`: derived
 
 ## 4. Make it reviewable
 
-- [ ] CI: GitHub Actions running `pytest` and `./gradlew assembleDebug`. The
-      Android build needs a JDK 17 setup step and `android-actions/setup-android`.
+- [ ] CI: GitHub Actions running `make test` (pytest + the Robolectric suite)
+      and `./gradlew assembleDebug`. The Android side needs a JDK 17 setup step
+      and `android-actions/setup-android`.
 - [ ] `AGENTS.md` / `CONTRIBUTING.md`: how to run the daemon against fake data,
       how to regenerate fixtures, where the BLE decode lives.
 - [ ] README: cut the ontoplano framing from the opening paragraph. The first

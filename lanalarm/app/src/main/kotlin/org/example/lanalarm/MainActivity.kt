@@ -1,7 +1,10 @@
 package org.example.lanalarm
 
 import android.content.ComponentName
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -101,6 +104,19 @@ class MainActivity : AppCompatActivity() {
     private var weightEntries: List<WeightHistory.Entry> = emptyList()
     private var weightRangeDays: Int = 90
     private val background = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /**
+     * The service rewrites the schedule whenever the PC syncs one in, or when a
+     * one-shot retires itself after firing. Without this the list and the "next
+     * alarm" headline keep showing whatever was true when the tab was drawn,
+     * which reads as an edit that did not take.
+     */
+    private val alarmsChangedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            renderAlarms()
+            updateSensingStatus()
+        }
+    }
 
     private val wsStatusRunnable = object : Runnable {
         override fun run() {
@@ -281,11 +297,19 @@ class MainActivity : AppCompatActivity() {
 
         updateWsStatus()
         wsStatus.post(wsStatusRunnable)
+
+        val filter = IntentFilter(AlarmService.ACTION_ALARMS_CHANGED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(alarmsChangedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(alarmsChangedReceiver, filter)
+        }
     }
 
     override fun onPause() {
         super.onPause()
         wsStatus.removeCallbacks(wsStatusRunnable)
+        runCatching { unregisterReceiver(alarmsChangedReceiver) }
     }
 
     private fun ensureServiceRunning() {

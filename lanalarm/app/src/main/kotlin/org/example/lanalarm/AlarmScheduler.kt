@@ -197,6 +197,10 @@ class AlarmReceiver : BroadcastReceiver() {
             prefs.edit().putString(AppSettings.KEY_ALARMS, root.toString()).apply()
             Log.i(TAG, "One-shot alarm $alarmId retired")
             AlarmService.instance?.pushAlarmsToPC(root.toString())
+            // The schedule just changed without the UI asking, same as a sync.
+            context.sendBroadcast(
+                Intent(AlarmService.ACTION_ALARMS_CHANGED).setPackage(context.packageName)
+            )
         }
     }
 }
