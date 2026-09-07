@@ -104,7 +104,13 @@ object OntoplanoSync {
             }
 
         val merged = OntoplanoSchedule.mergeIntoSchedule(current, derived, now, HORIZON_DAYS)
-        if (merged.toString() == current.toString()) return derived.size
+
+        // Compare the alarms, not the roots: the merge rebuilds the wrapper
+        // object, so comparing those would report a change on every sync and
+        // rebook AlarmManager and redraw the UI for nothing.
+        val unchanged = merged.optJSONArray("alarms")?.toString() ==
+            current.optJSONArray("alarms")?.toString()
+        if (unchanged) return derived.size
 
         prefs.edit()
             .putString(AppSettings.KEY_ALARMS, merged.toString())

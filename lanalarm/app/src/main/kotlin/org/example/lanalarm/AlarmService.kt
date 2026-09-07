@@ -139,15 +139,18 @@ class AlarmService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        audioManager = getSystemService(AudioManager::class.java)
+
+        // Before going foreground, not after: buildServiceNotification() asks the
+        // scanner what it is doing, and a lateinit read here takes the whole
+        // service down on every single start — silently, inside a catch.
+        scaleScanner = ScaleScanner(this)
 
         // Android gives a service started with startForegroundService about five
         // seconds to show a notification or be killed, and onStartCommand has not
         // run yet. Claim the plainest type now and refine it once we know what
         // this start is actually for.
         enterForeground(ServiceForegroundType.MEDIA_ONLY)
-
-        audioManager = getSystemService(AudioManager::class.java)
-        scaleScanner = ScaleScanner(this)
     }
 
     // ─── Foreground service type ─────────────────────────────────────
