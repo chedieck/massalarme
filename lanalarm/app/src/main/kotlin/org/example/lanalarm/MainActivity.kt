@@ -11,15 +11,11 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
@@ -34,63 +30,77 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val KEY_OVERLAY_REQUESTED = "overlay_permission_requested"
-        private val WEEKDAY_KEYS = listOf(
-            "monday",
-            "tuesday",
-            "wednesday",
-            "thursday",
-            "friday",
-            "saturday",
-            "sunday"
-        )
-        private val WEEKDAY_LABELS = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+        /** What the token field shows once a token is stored. Never the token. */
+        private const val TOKEN_MASK = "••••••••••••"
     }
 
-    private lateinit var serviceStatus: TextView
-    private lateinit var secretStatus: TextView
-    private lateinit var serviceToggle: Button
-    private lateinit var scanSecretButton: Button
-    private lateinit var bootToggle: Switch
     private lateinit var tabSettings: ImageView
     private lateinit var tabAlarms: ImageView
+    private lateinit var tabWeight: ImageView
     private lateinit var settingsContent: View
     private lateinit var alarmsContent: View
+    private lateinit var weightContent: View
+
+    // Alarms tab
     private lateinit var alarmsList: LinearLayout
     private lateinit var alarmsEmpty: TextView
     private lateinit var alarmsScroll: ScrollView
     private lateinit var alarmsLastSync: TextView
     private lateinit var alarmsAdd: Button
-    private lateinit var wsStatus: TextView
+
+    // Settings: next alarm
     private lateinit var nextAlarmStatus: TextView
     private lateinit var nextAlarmDetail: TextView
-    private lateinit var impedanceNote: TextView
-    private lateinit var homeWifiStatus: TextView
-    private lateinit var setHomeWifiButton: Button
-    private lateinit var permissionsStatus: TextView
-    private lateinit var grantPermissionsButton: Button
-    private lateinit var readingsStatus: TextView
-    private lateinit var uploadNowButton: Button
-    private lateinit var weighNowButton: Button
-    private lateinit var ontoplanoPattern: EditText
-    private lateinit var ontoplanoKindHard: TextView
-    private lateinit var ontoplanoKindSoft: TextView
-    private lateinit var ontoplanoSave: Button
-    private lateinit var ontoplanoStatus: TextView
-    private lateinit var ontoplanoAccount: TextView
-    private lateinit var ontoplanoDetail: TextView
-    private lateinit var pcLinkStatus: TextView
-    private lateinit var homeWifiCaption: TextView
+    private lateinit var cancelSnoozeButton: Button
+
+    // Settings: scale
     private lateinit var scaleModeWeight: TextView
     private lateinit var scaleModeBodyFat: TextView
     private lateinit var scaleModeCaption: TextView
-    private lateinit var tabWeight: ImageView
-    private lateinit var weightContent: View
+    private lateinit var readingsStatus: TextView
+    private lateinit var impedanceNote: TextView
+    private lateinit var weighNowButton: Button
+    private lateinit var liveReading: TextView
+
+    // Settings: dismissal
+    private lateinit var passphraseToggle: Switch
+    private lateinit var passphraseField: EditText
+    private lateinit var snoozeOptions: List<Pair<TextView, Int>>
+    private lateinit var dismissalSave: Button
+
+    // Settings: home
+    private lateinit var homeWifiStatus: TextView
+    private lateinit var homeWifiCaption: TextView
+    private lateinit var setHomeWifiButton: Button
+
+    // Settings: ontoplano
+    private lateinit var ontoplanoToggle: Switch
+    private lateinit var ontoplanoAccount: TextView
+    private lateinit var ontoplanoDetail: TextView
+    private lateinit var ontoplanoBaseUrl: EditText
+    private lateinit var ontoplanoToken: EditText
+    private lateinit var ontoplanoSave: Button
+    private lateinit var scanSecretButton: Button
+    private lateinit var ontoplanoStatus: TextView
+    private lateinit var ontoplanoPattern: EditText
+    private lateinit var ontoplanoKindHard: TextView
+    private lateinit var ontoplanoKindSoft: TextView
+    private lateinit var ontoplanoKindCaption: TextView
+    private lateinit var ontoplanoRuleSave: Button
+
+    // Settings: permissions and background
+    private lateinit var permissionsStatus: TextView
+    private lateinit var grantPermissionsButton: Button
+    private lateinit var serviceStatus: TextView
+    private lateinit var bootToggle: Switch
+
+    // Weight tab
     private lateinit var weightChart: WeightChartView
     private lateinit var weightLatest: TextView
     private lateinit var weightLatestWhen: TextView
@@ -106,108 +116,132 @@ class MainActivity : AppCompatActivity() {
     private val background = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     /**
-     * The service rewrites the schedule whenever the PC syncs one in, or when a
-     * one-shot retires itself after firing. Without this the list and the "next
-     * alarm" headline keep showing whatever was true when the tab was drawn,
-     * which reads as an edit that did not take.
+     * The schedule can change without the UI asking — a one-shot retiring after
+     * it fires, or an ontoplano sync landing. Without this the list and the
+     * "next alarm" headline keep showing whatever was true when the tab was
+     * drawn, which reads as an edit that did not take.
      */
     private val alarmsChangedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             renderAlarms()
-            updateSensingStatus()
+            renderSettings()
         }
     }
 
-    private val wsStatusRunnable = object : Runnable {
-        override fun run() {
-            updateWsStatus()
-            wsStatus.postDelayed(this, 3000)
+    /** Live scale readings, so "Listen for scale" proves the scale is heard. */
+    private val scaleReadingReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent == null) return
+            val weightKg = intent.getDoubleExtra(AlarmService.EXTRA_WEIGHT_KG, 0.0)
+            if (weightKg <= 0) return
+            val stabilized = intent.getBooleanExtra(AlarmService.EXTRA_STABILIZED, false)
+            liveReading.visibility = View.VISIBLE
+            liveReading.text = String.format(
+                Locale.US,
+                "%.2f kg %s",
+                weightKg,
+                if (stabilized) "· settled" else "· settling"
+            )
         }
     }
 
-    private enum class Tab {
-        SETTINGS,
-        ALARMS,
-        WEIGHT
-    }
+    private enum class Tab { SETTINGS, ALARMS, WEIGHT }
 
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
         val contents = result.contents ?: return@registerForActivityResult
-        // The QR now carries the PC's address and the scale parameters as well as
-        // the secret, because the phone has to work without the PC prompting it.
         if (AppSettings.applyProvisioning(this, contents)) {
-            Toast.makeText(this, "Paired with PC", Toast.LENGTH_SHORT).show()
-            AlarmService.instance?.reconnectWebSocketNow()
-            AlarmService.instance?.uploadReadings()
+            Toast.makeText(this, "Connected to ontoplano", Toast.LENGTH_SHORT).show()
+            testOntoplano()
         } else {
             Toast.makeText(this, "That QR code was not recognised", Toast.LENGTH_LONG).show()
         }
-        updateUI()
+        renderSettings()
     }
 
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) launchScanner()
-    }
+    ) { granted -> if (granted) launchScanner() }
 
     private val runtimePermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
-        val denied = grants.filterValues { !it }.keys
-        if (denied.isNotEmpty()) {
+        if (grants.any { !it.value }) {
             Toast.makeText(
                 this,
                 "Without these, hard alarms fall back to a dismiss button",
                 Toast.LENGTH_LONG
             ).show()
         }
-        updateUI()
+        renderSettings()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        bindViews()
+        wireUp()
+        selectTab(Tab.SETTINGS)
+    }
 
-        serviceStatus = findViewById(R.id.service_status)
-        secretStatus = findViewById(R.id.secret_status)
-        serviceToggle = findViewById(R.id.service_toggle)
-        scanSecretButton = findViewById(R.id.scan_secret)
-        bootToggle = findViewById(R.id.boot_toggle)
+    private fun bindViews() {
         tabSettings = findViewById(R.id.tab_settings)
         tabAlarms = findViewById(R.id.tab_alarms)
+        tabWeight = findViewById(R.id.tab_weight)
         settingsContent = findViewById(R.id.settings_content)
         alarmsContent = findViewById(R.id.alarms_content)
+        weightContent = findViewById(R.id.weight_content)
+
         alarmsList = findViewById(R.id.alarms_list)
         alarmsEmpty = findViewById(R.id.alarms_empty)
         alarmsScroll = findViewById(R.id.alarms_scroll)
         alarmsLastSync = findViewById(R.id.alarms_last_sync)
         alarmsAdd = findViewById(R.id.alarms_add)
-        wsStatus = findViewById(R.id.ws_status)
+
         nextAlarmStatus = findViewById(R.id.next_alarm_status)
         nextAlarmDetail = findViewById(R.id.next_alarm_detail)
-        impedanceNote = findViewById(R.id.impedance_note)
-        homeWifiStatus = findViewById(R.id.home_wifi_status)
-        setHomeWifiButton = findViewById(R.id.set_home_wifi)
-        permissionsStatus = findViewById(R.id.permissions_status)
-        grantPermissionsButton = findViewById(R.id.grant_permissions)
-        readingsStatus = findViewById(R.id.readings_status)
-        uploadNowButton = findViewById(R.id.upload_now)
-        weighNowButton = findViewById(R.id.weigh_now)
-        ontoplanoPattern = findViewById(R.id.ontoplano_pattern)
-        ontoplanoKindHard = findViewById(R.id.ontoplano_kind_hard)
-        ontoplanoKindSoft = findViewById(R.id.ontoplano_kind_soft)
-        ontoplanoSave = findViewById(R.id.ontoplano_save)
-        ontoplanoStatus = findViewById(R.id.ontoplano_status)
-        ontoplanoAccount = findViewById(R.id.ontoplano_account)
-        ontoplanoDetail = findViewById(R.id.ontoplano_detail)
-        pcLinkStatus = findViewById(R.id.pc_link_status)
-        homeWifiCaption = findViewById(R.id.home_wifi_caption)
+        cancelSnoozeButton = findViewById(R.id.cancel_snooze)
+
         scaleModeWeight = findViewById(R.id.scale_mode_weight)
         scaleModeBodyFat = findViewById(R.id.scale_mode_bodyfat)
         scaleModeCaption = findViewById(R.id.scale_mode_caption)
-        tabWeight = findViewById(R.id.tab_weight)
-        weightContent = findViewById(R.id.weight_content)
+        readingsStatus = findViewById(R.id.readings_status)
+        impedanceNote = findViewById(R.id.impedance_note)
+        weighNowButton = findViewById(R.id.weigh_now)
+        liveReading = findViewById(R.id.live_reading)
+
+        passphraseToggle = findViewById(R.id.passphrase_toggle)
+        passphraseField = findViewById(R.id.passphrase_field)
+        dismissalSave = findViewById(R.id.dismissal_save)
+        snoozeOptions = listOf(
+            findViewById<TextView>(R.id.snooze_0) to 0,
+            findViewById<TextView>(R.id.snooze_5) to 5,
+            findViewById<TextView>(R.id.snooze_9) to 9,
+            findViewById<TextView>(R.id.snooze_15) to 15
+        )
+
+        homeWifiStatus = findViewById(R.id.home_wifi_status)
+        homeWifiCaption = findViewById(R.id.home_wifi_caption)
+        setHomeWifiButton = findViewById(R.id.set_home_wifi)
+
+        ontoplanoToggle = findViewById(R.id.ontoplano_toggle)
+        ontoplanoAccount = findViewById(R.id.ontoplano_account)
+        ontoplanoDetail = findViewById(R.id.ontoplano_detail)
+        ontoplanoBaseUrl = findViewById(R.id.ontoplano_base_url)
+        ontoplanoToken = findViewById(R.id.ontoplano_token)
+        ontoplanoSave = findViewById(R.id.ontoplano_save)
+        scanSecretButton = findViewById(R.id.scan_secret)
+        ontoplanoStatus = findViewById(R.id.ontoplano_status)
+        ontoplanoPattern = findViewById(R.id.ontoplano_pattern)
+        ontoplanoKindHard = findViewById(R.id.ontoplano_kind_hard)
+        ontoplanoKindSoft = findViewById(R.id.ontoplano_kind_soft)
+        ontoplanoKindCaption = findViewById(R.id.ontoplano_kind_caption)
+        ontoplanoRuleSave = findViewById(R.id.ontoplano_rule_save)
+
+        permissionsStatus = findViewById(R.id.permissions_status)
+        grantPermissionsButton = findViewById(R.id.grant_permissions)
+        serviceStatus = findViewById(R.id.service_status)
+        bootToggle = findViewById(R.id.boot_toggle)
+
         weightChart = findViewById(R.id.weight_chart)
         weightLatest = findViewById(R.id.weight_latest)
         weightLatestWhen = findViewById(R.id.weight_latest_when)
@@ -217,146 +251,397 @@ class MainActivity : AppCompatActivity() {
         weightRange30 = findViewById(R.id.weight_range_30)
         weightRange90 = findViewById(R.id.weight_range_90)
         weightRangeAll = findViewById(R.id.weight_range_all)
+    }
 
+    private fun wireUp() {
+        tabSettings.setOnClickListener { selectTab(Tab.SETTINGS) }
+        tabAlarms.setOnClickListener { selectTab(Tab.ALARMS) }
         tabWeight.setOnClickListener { selectTab(Tab.WEIGHT) }
+
+        alarmsAdd.setOnClickListener { showAddAlarmDialog() }
+        cancelSnoozeButton.setOnClickListener {
+            AlarmScheduler.cancelSnooze(this)
+            renderSettings()
+        }
+
         scaleModeWeight.setOnClickListener { setScaleMode(AppSettings.FLAG_WEIGHT_ONLY) }
         scaleModeBodyFat.setOnClickListener { setScaleMode(AppSettings.FLAG_BODY_FAT) }
+        weighNowButton.setOnClickListener { toggleScaleListening() }
+
+        snoozeOptions.forEach { (view, minutes) ->
+            view.setOnClickListener {
+                AppSettings.setSnoozeMinutes(this, minutes)
+                renderDismissal()
+            }
+        }
+        dismissalSave.setOnClickListener { saveDismissalSettings() }
+
+        setHomeWifiButton.setOnClickListener { captureHomeNetwork() }
+        grantPermissionsButton.setOnClickListener { requestRuntimePermissions() }
+
+        ontoplanoToggle.setOnClickListener {
+            AppSettings.setOntoplanoEnabled(this, ontoplanoToggle.isChecked)
+            renderOntoplano()
+            if (ontoplanoToggle.isChecked) testOntoplano()
+        }
+        ontoplanoSave.setOnClickListener { saveOntoplanoConnection() }
+        scanSecretButton.setOnClickListener { requestScan() }
+        ontoplanoKindHard.setOnClickListener { selectOntoplanoKind(AlarmSchedule.KIND_HARD) }
+        ontoplanoKindSoft.setOnClickListener { selectOntoplanoKind(AlarmSchedule.KIND_SOFT) }
+        ontoplanoRuleSave.setOnClickListener { applyOntoplanoRule() }
+
         weightRange30.setOnClickListener { setWeightRange(30) }
         weightRange90.setOnClickListener { setWeightRange(90) }
         weightRangeAll.setOnClickListener { setWeightRange(0) }
 
-        setHomeWifiButton.setOnClickListener { captureHomeNetwork() }
-        grantPermissionsButton.setOnClickListener { requestRuntimePermissions() }
-        uploadNowButton.setOnClickListener {
-            AlarmService.instance?.uploadReadings()
-            Toast.makeText(this, "Uploading…", Toast.LENGTH_SHORT).show()
-            uploadNowButton.postDelayed({ updateUI() }, 1500)
-        }
-        weighNowButton.setOnClickListener { toggleScaleListening() }
-
-        ontoplanoKindHard.setOnClickListener { selectOntoplanoKind(AlarmSchedule.KIND_HARD) }
-        ontoplanoKindSoft.setOnClickListener { selectOntoplanoKind(AlarmSchedule.KIND_SOFT) }
-        ontoplanoSave.setOnClickListener { applyOntoplanoRule() }
-
-        tabSettings.setOnClickListener { selectTab(Tab.SETTINGS) }
-        tabAlarms.setOnClickListener { selectTab(Tab.ALARMS) }
-        alarmsAdd.setOnClickListener { showAddAlarmDialog() }
-
-        serviceToggle.setOnClickListener {
-            val serviceIntent = Intent(this, AlarmService::class.java)
-            if (AlarmService.instance != null) {
-                stopService(serviceIntent)
-            } else {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(serviceIntent)
-                } else {
-                    startService(serviceIntent)
-                }
-            }
-            serviceToggle.postDelayed({ updateUI() }, 500)
-        }
-
-        scanSecretButton.setOnClickListener {
-            if (checkSelfPermission(android.Manifest.permission.CAMERA)
-                == PackageManager.PERMISSION_GRANTED
-            ) {
-                launchScanner()
-            } else {
-                cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
-            }
-        }
-
         bootToggle.setOnCheckedChangeListener { _, isChecked ->
-            val state = if (isChecked)
-                PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-            else
-                PackageManager.COMPONENT_ENABLED_STATE_DISABLED
-
             packageManager.setComponentEnabledSetting(
                 ComponentName(this, BootReceiver::class.java),
-                state,
+                if (isChecked) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
                 PackageManager.DONT_KILL_APP
             )
         }
-
-        ensureServiceRunning()
-        selectTab(Tab.SETTINGS)
     }
 
     override fun onResume() {
         super.onResume()
-        updateUI()
+        renderSettings()
         renderAlarms()
         ensureOverlayPermission()
 
-        // The service now backs off to a quarter of an hour between reconnect
-        // attempts rather than retrying every fifteen seconds, so opening the
-        // app is the user's way of saying "try now" — which is exactly what
-        // someone does when they want to see the PC link come up.
-        AlarmService.instance?.let { if (!AlarmService.wsConnected) it.reconnectWebSocketNow() }
+        registerNotExported(alarmsChangedReceiver, AlarmService.ACTION_ALARMS_CHANGED)
+        registerNotExported(scaleReadingReceiver, AlarmService.ACTION_SCALE_READING)
 
-        updateWsStatus()
-        wsStatus.post(wsStatusRunnable)
-
-        val filter = IntentFilter(AlarmService.ACTION_ALARMS_CHANGED)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(alarmsChangedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(alarmsChangedReceiver, filter)
-        }
+        // Opening the app is the one moment the user is definitely present and
+        // definitely has a network, so it is the cheapest possible sync trigger
+        // — no polling, no wakeups, no background process.
+        syncOntoplanoInBackground()
     }
 
     override fun onPause() {
         super.onPause()
-        wsStatus.removeCallbacks(wsStatusRunnable)
         runCatching { unregisterReceiver(alarmsChangedReceiver) }
+        runCatching { unregisterReceiver(scaleReadingReceiver) }
     }
 
-    private fun ensureServiceRunning() {
-        if (AlarmService.instance == null) {
-            val serviceIntent = Intent(this, AlarmService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
+    private fun registerNotExported(receiver: BroadcastReceiver, action: String) {
+        val filter = IntentFilter(action)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(receiver, filter)
         }
     }
 
-    private fun updateUI() {
-        val running = AlarmService.instance != null
-        serviceStatus.text = if (running) "Running" else "Stopped"
-        serviceToggle.text = if (running) "Stop service" else "Start service"
+    // ─── Settings rendering ──────────────────────────────────────────
 
-        val pcAddress = AppSettings.pcBaseUrl(this)
-        secretStatus.text = when {
-            AppSettings.secret(this) == null -> "Not paired"
-            pcAddress == null -> "Paired, address unknown"
-            else -> pcAddress
+    private fun renderSettings() {
+        nextAlarmStatus.text = AlarmScheduler.nextAlarmDescription(this)
+        nextAlarmDetail.text = AlarmScheduler.nextAlarmDetail(this)
+        cancelSnoozeButton.visibility =
+            if (AlarmScheduler.pendingSnooze(this) != null) View.VISIBLE else View.GONE
+
+        renderScaleMode()
+        renderReadings()
+        renderDismissal()
+        renderHomeNetwork()
+        renderOntoplano()
+        renderPermissions()
+
+        serviceStatus.text = when {
+            AlarmService.instance?.isScanningScale() == true -> "Listening for the scale"
+            AlarmService.instance != null -> "Working"
+            else -> "Idle"
         }
-        pcLinkStatus.text = if (AlarmService.wsConnected) "Connected" else "Disconnected"
-        refreshOntoplanoStatus()
-
-        // Don't clobber what the user is part-way through typing.
-        if (!ontoplanoPattern.hasFocus()) {
-            ontoplanoPattern.setText(AppSettings.ontoplanoPattern(this))
-        }
-        renderOntoplanoRule()
-
-        updateSensingStatus()
 
         val bootState = packageManager.getComponentEnabledSetting(
             ComponentName(this, BootReceiver::class.java)
         )
-        // DEFAULT means manifest value (now true), so treat as enabled
-        bootToggle.isChecked = bootState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-                || bootState == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+        // DEFAULT means the manifest value, which is enabled.
+        bootToggle.isChecked = bootState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED ||
+            bootState == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+    }
+
+    private fun renderScaleMode() {
+        val bodyFat = AppSettings.requiresBodyFat(this)
+        scaleModeWeight.isSelected = !bodyFat
+        scaleModeBodyFat.isSelected = bodyFat
+        scaleModeCaption.text = if (bodyFat) {
+            "The scale reports your body fat. It only manages that with bare feet, " +
+                "so the alarm keeps going until the measurement lands — and stays " +
+                "going if you stand there in socks."
+        } else {
+            "The scale gives up on body fat and reports the weight alone, which is " +
+                "what happens when you step off. Socks are fine; no body-fat reading."
+        }
+    }
+
+    private fun setScaleMode(flag: Int) {
+        AppSettings.setStableFlag(this, flag)
+        renderScaleMode()
+        renderReadings()
+    }
+
+    private fun renderReadings() {
+        val store = ReadingStore(this)
+        val pending = try {
+            store.pendingCount()
+        } finally {
+            store.close()
+        }
+
+        val prefs = AppSettings.prefs(this)
+        val lastWeight = prefs.getFloat(AppSettings.KEY_LAST_WEIGHT, 0f)
+        val lastWeightAt = prefs.getString(AppSettings.KEY_LAST_WEIGHT_AT, null)
+
+        readingsStatus.text = buildString {
+            if (lastWeight > 0f && lastWeightAt != null) {
+                append("Last weigh-in %.1f kg".format(lastWeight))
+                WeightHistory.parseUtc(lastWeightAt)?.let {
+                    append(" · ").append(WeightHistory.formatWhen(it))
+                }
+            } else {
+                append("No weigh-ins recorded yet")
+            }
+            if (pending > 0) append("\n$pending waiting to publish")
+        }
+
+        impedanceNote.text = if (AppSettings.requiresBodyFat(this)) {
+            "Records impedance in ohms (typically 300–800 Ω)."
+        } else {
+            "Records no impedance, so the Weight tab shows none."
+        }
+
+        weighNowButton.text =
+            if (AlarmService.instance?.isScanningScale() == true) "Stop listening"
+            else "Listen for scale"
+    }
+
+    private fun renderDismissal() {
+        passphraseToggle.isChecked = AppSettings.passphraseEnabled(this)
+        if (!passphraseField.hasFocus()) passphraseField.setText(AppSettings.passphrase(this))
+        passphraseField.isEnabled = passphraseToggle.isChecked
+
+        val minutes = AppSettings.snoozeMinutes(this)
+        snoozeOptions.forEach { (view, value) -> view.isSelected = value == minutes }
+    }
+
+    private fun saveDismissalSettings() {
+        val phrase = passphraseField.text.toString().trim()
+        val enabled = passphraseToggle.isChecked
+
+        if (enabled && phrase.length < 8) {
+            // A three-character passphrase is not an escape hatch, it is an off
+            // switch you will use half-asleep without deciding to.
+            Toast.makeText(
+                this,
+                "Make it at least 8 characters, or turn the passphrase off",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        AppSettings.setPassphrase(this, phrase, enabled)
+        renderDismissal()
+        Toast.makeText(this, "Dismissal settings saved", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun renderHomeNetwork() {
+        val configured = AppSettings.homeSsid(this)
+        val home = HomeNetwork.status(this)
+
+        if (configured == null) {
+            homeWifiStatus.text = "Not set"
+            homeWifiCaption.text =
+                "Hard alarms apply everywhere until you set a home network."
+            setHomeWifiButton.visibility = View.VISIBLE
+            return
+        }
+
+        homeWifiStatus.text = configured
+        if (home.isHome) {
+            homeWifiCaption.text = "You are on it now. Hard alarms apply here."
+            setHomeWifiButton.visibility = View.GONE
+        } else {
+            homeWifiCaption.text = "Currently ${home.reason}. Hard alarms fall back to a button."
+            setHomeWifiButton.visibility = View.VISIBLE
+        }
+    }
+
+    private fun renderPermissions() {
+        val missing = missingRuntimePermissions()
+        permissionsStatus.text = if (missing.isEmpty()) {
+            "All granted"
+        } else {
+            "${missing.size} missing — hard alarms will fall back to a button"
+        }
+        grantPermissionsButton.visibility = if (missing.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    // ─── ontoplano ───────────────────────────────────────────────────
+
+    private fun renderOntoplano() {
+        val enabled = AppSettings.ontoplanoEnabled(this)
+        ontoplanoToggle.isChecked = enabled
+
+        if (!ontoplanoBaseUrl.hasFocus()) {
+            ontoplanoBaseUrl.setText(AppSettings.ontoplanoBaseUrl(this).orEmpty())
+        }
+        if (!ontoplanoToken.hasFocus()) {
+            // The token itself is never rendered back. A field that shows the
+            // secret is a field that ends up in a screenshot.
+            ontoplanoToken.setText(if (AppSettings.ontoplanoToken(this) != null) TOKEN_MASK else "")
+        }
+        if (!ontoplanoPattern.hasFocus()) {
+            ontoplanoPattern.setText(AppSettings.ontoplanoPattern(this))
+        }
+
+        val kind = AppSettings.ontoplanoKind(this)
+        ontoplanoKindHard.isSelected = kind == AlarmSchedule.KIND_HARD
+        ontoplanoKindSoft.isSelected = kind == AlarmSchedule.KIND_SOFT
+        ontoplanoKindCaption.text = if (kind == AlarmSchedule.KIND_HARD) {
+            "Planned tasks ring the siren and need the scale. Snooze still works."
+        } else {
+            "Planned tasks ring gently and dismiss with one tap."
+        }
+
+        ontoplanoAccount.text = when {
+            !enabled -> "Off"
+            AppSettings.ontoplanoClient(this) == null -> "Not configured"
+            else -> AppSettings.ontoplanoBaseUrl(this).orEmpty()
+        }
+
+        val error = AppSettings.prefs(this).getString(AppSettings.KEY_LAST_UPLOAD_ERROR, null)
+        val lastOk = AppSettings.prefs(this).getString(AppSettings.KEY_LAST_UPLOAD_OK, null)
+        ontoplanoDetail.text = buildString {
+            if (!enabled) {
+                append("Publishes weigh-ins and turns planned tasks into alarms. ")
+                append("The app works fully without it.")
+                return@buildString
+            }
+            append(Ontoplano.REQUIRED_SCOPES.joinToString(", "))
+            if (AppSettings.ontoplanoToken(this@MainActivity) != null &&
+                !AppSettings.ontoplanoTokenProtected(this@MainActivity)
+            ) {
+                // Worth saying out loud rather than pretending.
+                append("\nToken stored unencrypted — this device's keystore refused it.")
+            }
+            lastOk?.let { append("\nLast published ").append(it) }
+            error?.let { append("\n").append(it) }
+        }
+    }
+
+    private fun saveOntoplanoConnection() {
+        val baseUrl = ontoplanoBaseUrl.text.toString().trim()
+        if (baseUrl.isEmpty()) {
+            ontoplanoStatus.text = "Server address is required"
+            return
+        }
+
+        val typed = ontoplanoToken.text.toString().trim()
+        // The mask means "leave the stored token alone", not "the token is dots".
+        val token = typed.takeIf { it.isNotEmpty() && it != TOKEN_MASK }
+        if (token == null && AppSettings.ontoplanoToken(this) == null) {
+            ontoplanoStatus.text = "A token is required"
+            return
+        }
+
+        AppSettings.setOntoplano(this, baseUrl, token, enabled = true)
+        renderOntoplano()
+        testOntoplano()
     }
 
     /**
-     * The permissions the phone needs to do the job the PC used to do:
-     * BLE scanning for the scale, and location (which is what Android makes you
-     * ask for to read the wifi SSID and, below API 31, to see scan results).
+     * Prove the connection works, and say who it belongs to.
+     *
+     * "Saved" is not the answer to the question a user is actually asking here,
+     * which is whether their alarm will still work tomorrow. `/me` needs no
+     * scope, so it is the honest first call.
+     */
+    private fun testOntoplano() {
+        ontoplanoStatus.text = "Checking…"
+        background.execute {
+            val client = AppSettings.ontoplanoClient(this)
+            if (client == null) {
+                runOnUiThread { ontoplanoStatus.text = "Not configured" }
+                return@execute
+            }
+            val message = try {
+                val me = client.whoami()
+                val user = listOf("email", "name", "username")
+                    .firstNotNullOfOrNull { me.optString(it).takeIf { v -> v.isNotBlank() } }
+                    ?: "connected"
+                client.declarePlugin()
+                client.declareStream()
+                "Connected as $user"
+            } catch (e: Ontoplano.Failure) {
+                OntoplanoSync.describe(e)
+            } catch (e: Exception) {
+                e.message ?: "could not reach the server"
+            }
+            runOnUiThread {
+                ontoplanoStatus.text = message
+                renderOntoplano()
+            }
+        }
+    }
+
+    private fun selectOntoplanoKind(kind: String) {
+        AppSettings.setOntoplanoRule(this, ontoplanoPattern.text.toString(), kind)
+        renderOntoplano()
+    }
+
+    private fun applyOntoplanoRule() {
+        val pattern = ontoplanoPattern.text.toString().trim()
+        if (pattern.isNotEmpty() && runCatching { Regex(pattern) }.isFailure) {
+            ontoplanoStatus.text = "That is not a valid pattern"
+            return
+        }
+
+        AppSettings.setOntoplanoRule(this, pattern, AppSettings.ontoplanoKind(this))
+        if (pattern.isEmpty()) {
+            ontoplanoStatus.text = "Cleared — no planned task will become an alarm."
+            return
+        }
+        syncOntoplanoInBackground(announce = true)
+    }
+
+    /**
+     * Run a full sync without the service.
+     *
+     * The activity is alive and the user is watching, so there is no reason to
+     * start a background process to do it — that was the old shape, and it is
+     * what kept a service running all day.
+     */
+    private fun syncOntoplanoInBackground(announce: Boolean = false) {
+        if (AppSettings.ontoplanoClient(this) == null) return
+        if (announce) ontoplanoStatus.text = "Syncing…"
+
+        background.execute {
+            val outcome = OntoplanoSync.run(this)
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (announce) {
+                    ontoplanoStatus.text = if (outcome.ok) {
+                        "Synced · ${outcome.uploaded} published · " +
+                            "${outcome.alarmsDerived} alarm(s) from tasks"
+                    } else {
+                        outcome.error.orEmpty()
+                    }
+                }
+                renderAlarms()
+                renderSettings()
+            }
+        }
+    }
+
+    // ─── Permissions and provisioning ────────────────────────────────
+
+    /**
+     * The permissions the phone needs to do the job the PC used to do: BLE
+     * scanning for the scale, and location (which is what Android makes you ask
+     * for to read the wifi SSID and, below API 31, to see scan results).
      */
     private fun missingRuntimePermissions(): List<String> {
         val wanted = mutableListOf(android.Manifest.permission.ACCESS_FINE_LOCATION)
@@ -367,9 +652,7 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             wanted += android.Manifest.permission.POST_NOTIFICATIONS
         }
-        return wanted.filter {
-            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
-        }
+        return wanted.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
     }
 
     private fun requestRuntimePermissions() {
@@ -379,6 +662,16 @@ class MainActivity : AppCompatActivity() {
             return
         }
         runtimePermissionLauncher.launch(missing.toTypedArray())
+    }
+
+    private fun requestScan() {
+        if (checkSelfPermission(android.Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            launchScanner()
+        } else {
+            cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+        }
     }
 
     private fun captureHomeNetwork() {
@@ -404,264 +697,40 @@ class MainActivity : AppCompatActivity() {
 
         AppSettings.setHomeNetwork(this, ssid, HomeNetwork.currentBssid(this))
         Toast.makeText(this, "Home wifi set to $ssid", Toast.LENGTH_SHORT).show()
-        updateUI()
+        renderSettings()
     }
 
     /**
      * Manual scale listening, outside an alarm — useful for a midday weigh-in
      * and for checking the scale is reachable at all.
+     *
+     * This and a ringing hard alarm are the only two things that ever turn the
+     * Bluetooth radio on. Everything else in the app is asleep.
      */
     private fun toggleScaleListening() {
         val service = AlarmService.instance
-        if (service == null) {
-            Toast.makeText(this, "Service is not running", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        if (service.isScanningScale()) {
-            service.stopScaleScan()
+        if (service != null && service.isScanningScale()) {
+            startService(AlarmService.ACTION_STOP_LISTENING)
+            liveReading.visibility = View.GONE
             Toast.makeText(this, "Stopped listening", Toast.LENGTH_SHORT).show()
-        } else if (service.startScaleScan()) {
+        } else {
+            liveReading.visibility = View.GONE
+            startService(AlarmService.ACTION_LISTEN_SCALE)
             Toast.makeText(this, "Listening for the scale — step on it", Toast.LENGTH_LONG).show()
+        }
+        weighNowButton.postDelayed({ renderReadings(); renderSettings() }, 600)
+    }
+
+    private fun startService(action: String) {
+        val intent = Intent(this, AlarmService::class.java).setAction(action)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
         } else {
-            Toast.makeText(
-                this,
-                "Could not start scanning — check Bluetooth and permissions",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-        updateUI()
-    }
-
-    /**
-     * Which ontoplano tasks become alarms.
-     *
-     * The rule is chosen here but enforced on the PC — that is the side holding
-     * the ontoplano token and doing the fetching — so applying it sends the rule
-     * over the same WebSocket the schedule already uses.
-     */
-    private fun selectOntoplanoKind(kind: String) {
-        AppSettings.setOntoplanoRule(this, ontoplanoPattern.text.toString(), kind)
-        renderOntoplanoRule()
-    }
-
-    private fun applyOntoplanoRule() {
-        val pattern = ontoplanoPattern.text.toString().trim()
-        val kind = AppSettings.ontoplanoKind(this)
-
-        if (pattern.isNotEmpty()) {
-            // Fail here rather than silently sending the PC something it will
-            // log a warning about and drop.
-            val valid = runCatching { Regex(pattern) }.isSuccess
-            if (!valid) {
-                ontoplanoStatus.text = "That is not a valid pattern"
-                return
-            }
-        }
-
-        AppSettings.setOntoplanoRule(this, pattern, kind)
-
-        val service = AlarmService.instance
-        if (service == null || !AlarmService.wsConnected) {
-            ontoplanoStatus.text = "Saved. Will reach the PC when it reconnects."
-            return
-        }
-
-        service.pushOntoplanoRule(pattern, kind)
-        ontoplanoStatus.text = if (pattern.isEmpty()) {
-            "Cleared — no ontoplano tasks will become alarms."
-        } else {
-            "Sent to the PC. Matching tasks appear in Alarms shortly."
-        }
-        renderOntoplanoRule()
-    }
-
-    private fun renderOntoplanoRule() {
-        val kind = AppSettings.ontoplanoKind(this)
-        ontoplanoKindHard.isSelected = kind == AlarmSchedule.KIND_HARD
-        ontoplanoKindSoft.isSelected = kind == AlarmSchedule.KIND_SOFT
-    }
-
-    private fun updateSensingStatus() {
-        nextAlarmStatus.text = AlarmScheduler.nextAlarmDescription(this)
-        nextAlarmDetail.text = AlarmScheduler.nextAlarmDetail(this)
-        renderScaleMode()
-        renderHomeNetwork()
-        renderPermissions()
-        renderReadings()
-    }
-
-    private fun renderHomeNetwork() {
-        val configured = AppSettings.homeSsid(this)
-        val home = HomeNetwork.status(this)
-
-        if (configured == null) {
-            homeWifiStatus.text = "Not set"
-            homeWifiCaption.text =
-                "Hard alarms apply everywhere until you set a home network."
-            setHomeWifiButton.visibility = View.VISIBLE
-            return
-        }
-
-        homeWifiStatus.text = configured
-        if (home.isHome) {
-            homeWifiCaption.text = "You are on it now. Hard alarms apply here."
-            // Nothing to do from here, so the button would only be noise.
-            setHomeWifiButton.visibility = View.GONE
-        } else {
-            homeWifiCaption.text = "Currently ${home.reason}. Hard alarms fall back to a button."
-            setHomeWifiButton.visibility = View.VISIBLE
+            startService(intent)
         }
     }
 
-    private fun renderPermissions() {
-        val missing = missingRuntimePermissions()
-        permissionsStatus.text = if (missing.isEmpty()) {
-            "All granted"
-        } else {
-            "${missing.size} missing — hard alarms will fall back to a button"
-        }
-        grantPermissionsButton.visibility = if (missing.isEmpty()) View.GONE else View.VISIBLE
-    }
-
-    private fun renderReadings() {
-        val store = ReadingStore(this)
-        val pending = try {
-            store.pendingCount()
-        } finally {
-            store.close()
-        }
-
-        val prefs = AppSettings.prefs(this)
-        val lastWeight = prefs.getFloat(AppSettings.KEY_LAST_WEIGHT, 0f)
-        val lastWeightAt = prefs.getString(AppSettings.KEY_LAST_WEIGHT_AT, null)
-        val lastError = prefs.getString(AppSettings.KEY_LAST_UPLOAD_ERROR, null)
-
-        readingsStatus.text = buildString {
-            if (lastWeight > 0f && lastWeightAt != null) {
-                val at = WeightHistory.parseUtc(lastWeightAt)
-                append("Last weigh-in %.1f kg".format(lastWeight))
-                if (at != null) append(" · ").append(WeightHistory.formatWhen(at))
-            } else {
-                append("No weigh-ins recorded yet")
-            }
-            if (pending > 0) append("\n$pending waiting to upload")
-            if (!lastError.isNullOrBlank()) append("\n").append(lastError)
-        }
-
-        impedanceNote.text = if (AppSettings.requiresBodyFat(this)) {
-            "Body-fat mode records impedance in ohms (typically 300–800 Ω)."
-        } else {
-            "Weight mode records no impedance, so the Weight tab shows none."
-        }
-
-        weighNowButton.text =
-            if (AlarmService.instance?.isScanningScale() == true) "Stop listening"
-            else "Listen for scale"
-    }
-
-    /**
-     * Ask the PC who its ontoplano token belongs to.
-     *
-     * "Connected" alone is not much use when the question is whether it is
-     * pointing at the right account — which is exactly what went wrong after a
-     * token swap.
-     */
-    private fun refreshOntoplanoStatus() {
-        background.execute {
-            val status = fetchSyncStatus()
-            runOnUiThread { renderOntoplanoStatus(status) }
-        }
-    }
-
-    private fun fetchSyncStatus(): JSONObject? {
-        val secret = AppSettings.secret(this) ?: return null
-        val baseUrl = AppSettings.pcBaseUrl(this) ?: return null
-        return try {
-            val client = okhttp3.OkHttpClient.Builder()
-                .connectTimeout(4, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
-                .build()
-            val request = okhttp3.Request.Builder()
-                .url("$baseUrl/sync-status?key=$secret").get().build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) null
-                else JSONObject(response.body?.string().orEmpty())
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /**
-     * A JSON null read through optString() comes back as the literal "null",
-     * which is how a stray "null" ended up rendered in the status card.
-     */
-    private fun JSONObject.stringOrNull(key: String): String? =
-        if (isNull(key)) null else optString(key).takeIf { it.isNotBlank() && it != "null" }
-
-    private fun renderOntoplanoStatus(status: JSONObject?) {
-        if (status == null) {
-            ontoplanoAccount.text = "Unknown"
-            ontoplanoDetail.text = "Could not reach the PC to ask."
-            return
-        }
-
-        val enabled = status.optBoolean("ontoplano_enabled", false)
-        val user = status.stringOrNull("ontoplano_user")
-        val timezone = status.stringOrNull("ontoplano_timezone")
-        val baseUrl = status.stringOrNull("ontoplano_base_url")
-        val scopes = status.optJSONArray("ontoplano_scopes")
-        val pending = status.optInt("pending", 0)
-        val synced = status.optInt("synced", 0)
-        val lastError = status.stringOrNull("last_error")
-
-        ontoplanoAccount.text = when {
-            !enabled -> "Sync is off"
-            user != null -> user
-            else -> "Connected"
-        }
-
-        ontoplanoDetail.text = buildString {
-            if (!enabled) {
-                append("Set ontoplano.enabled: true in the PC's config.yaml.")
-                return@buildString
-            }
-            baseUrl?.let { append(it) }
-            timezone?.let { if (isNotEmpty()) append(" · "); append(it) }
-            if (scopes != null && scopes.length() > 0) {
-                val list = (0 until scopes.length()).joinToString(", ") { scopes.optString(it) }
-                append("\n").append(list)
-            }
-            append("\n$synced published")
-            if (pending > 0) append(", $pending pending")
-            if (status.optBoolean("halted", false)) append(" · sync halted")
-            lastError?.let { append("\n").append(it) }
-        }
-
-        // The PC is authoritative for the rule; mirror it back so the two agree.
-        val pattern = status.optString("ontoplano_pattern")
-        if (pattern.isNotBlank() && !ontoplanoPattern.hasFocus() &&
-            ontoplanoPattern.text.toString() != pattern
-        ) {
-            ontoplanoPattern.setText(pattern)
-            AppSettings.setOntoplanoRule(
-                this, pattern, status.optString("ontoplano_kind", "hard")
-            )
-            renderOntoplanoRule()
-        }
-    }
-
-    private fun updateWsStatus() {
-        val connected = AlarmService.wsConnected
-        if (connected) {
-            wsStatus.text = "● PC: connected"
-            wsStatus.setTextColor(ContextCompat.getColor(this, R.color.ws_connected))
-        } else {
-            wsStatus.text = "● PC: disconnected"
-            wsStatus.setTextColor(ContextCompat.getColor(this, R.color.ws_disconnected))
-        }
-    }
+    // ─── Tabs ────────────────────────────────────────────────────────
 
     private fun selectTab(tab: Tab) {
         val active = ContextCompat.getColor(this, R.color.secondary_accent)
@@ -678,7 +747,7 @@ class MainActivity : AppCompatActivity() {
         when (tab) {
             Tab.ALARMS -> renderAlarms()
             Tab.WEIGHT -> loadWeightHistory()
-            Tab.SETTINGS -> updateUI()
+            Tab.SETTINGS -> renderSettings()
         }
     }
 
@@ -693,12 +762,12 @@ class MainActivity : AppCompatActivity() {
         background.execute {
             val result = WeightHistory.load(this)
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 weightEntries = result.entries
                 weightSource.text = when {
                     result.error != null -> result.error
                     result.entries.isEmpty() -> "No weigh-ins recorded yet"
-                    result.fromPc -> "${result.entries.size} weigh-ins from the PC"
-                    else -> "${result.entries.size} weigh-ins from this phone"
+                    else -> "${result.entries.size} weigh-ins"
                 }
                 renderWeightHistory()
             }
@@ -779,30 +848,7 @@ class MainActivity : AppCompatActivity() {
         return row
     }
 
-    // ─── Scale mode ──────────────────────────────────────────────────
-
-    private fun setScaleMode(flag: Int) {
-        AppSettings.setStableFlag(this, flag)
-        renderScaleMode()
-        Toast.makeText(
-            this,
-            if (flag == AppSettings.FLAG_BODY_FAT) "Hard alarms now wait for the body-fat reading"
-            else "Hard alarms now stop as soon as your weight settles",
-            Toast.LENGTH_SHORT
-        ).show()
-    }
-
-    private fun renderScaleMode() {
-        val bodyFat = AppSettings.requiresBodyFat(this)
-        scaleModeWeight.isSelected = !bodyFat
-        scaleModeBodyFat.isSelected = bodyFat
-        scaleModeCaption.text = if (bodyFat) {
-            "Waits for the impedance reading, so the alarm keeps going until the " +
-                "scale has your body fat. Needs bare feet."
-        } else {
-            "Stops as soon as your weight settles. Socks are fine, but no body-fat reading."
-        }
-    }
+    // ─── Alarms ──────────────────────────────────────────────────────
 
     private fun renderAlarms() {
         val prefs = AppSettings.prefs(this)
@@ -824,7 +870,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         alarmsLastSync.text = when {
-            lastSync <= 0L -> "Never synced with the PC"
+            !AppSettings.ontoplanoEnabled(this) -> ""
+            lastSync <= 0L -> "Never synced with ontoplano"
             else -> "Synced " + SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
                 .format(Date(lastSync))
         }
@@ -851,7 +898,6 @@ class MainActivity : AppCompatActivity() {
             )
         )
 
-        // Disabled alarms stay legible but visibly inactive.
         row.alpha = if (alarm.enabled) 1f else 0.45f
 
         enabled.setOnCheckedChangeListener(null)
@@ -899,25 +945,24 @@ class MainActivity : AppCompatActivity() {
         AlarmEditor(this).show(existing = null, onSave = { saveAlarm(it) })
     }
 
-    /** Persist one alarm, push it to the PC, and rebook the next AlarmManager slot. */
+    /** Persist one alarm and rebook the next AlarmManager slot. */
     private fun saveAlarm(alarm: AlarmSchedule.Alarm) {
         val prefs = AppSettings.prefs(this)
         val root = loadAlarmsRoot(prefs.getString(AppSettings.KEY_ALARMS, null))
         val updated = AlarmSchedule.upsert(root, alarm)
 
         prefs.edit().putString(AppSettings.KEY_ALARMS, updated.toString()).apply()
-        sendAlarmsToPC(updated.toString())
         AlarmScheduler.rescheduleNext(this)
         renderAlarms()
-        updateSensingStatus()
+        renderSettings()
     }
 
     private fun deleteAlarm(alarm: AlarmSchedule.Alarm) {
         AlertDialog.Builder(this, R.style.MassalarmeDialog)
             .setTitle("Delete \"${alarm.name}\"?")
             .setPositiveButton("Delete") { _, _ ->
-                // Tombstone rather than drop, so the PC propagates the deletion
-                // instead of syncing the alarm back.
+                // Tombstone rather than drop, so an ontoplano re-sync does not
+                // resurrect an alarm the user deleted.
                 saveAlarm(
                     alarm.copy(
                         deleted = true,
@@ -931,44 +976,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadAlarmsRoot(raw: String?): JSONObject {
-        val root = try {
-            if (raw.isNullOrBlank()) JSONObject() else JSONObject(raw)
-        } catch (_: Exception) {
-            JSONObject()
-        }
+        val root = runCatching { if (raw.isNullOrBlank()) JSONObject() else JSONObject(raw) }
+            .getOrDefault(JSONObject())
         root.put("version", 2)
-        if (root.optJSONArray("alarms") == null) {
-            root.put("alarms", JSONArray())
-        }
+        if (root.optJSONArray("alarms") == null) root.put("alarms", JSONArray())
         return root
     }
 
+    // ─── Odds and ends ───────────────────────────────────────────────
 
-    private fun sendAlarmsToPC(alarmsJson: String) {
-        val payload = JSONObject()
-            .put("type", "update_alarms")
-            .put("data", JSONObject(alarmsJson))
-        AlarmService.instance?.sendWsMessage(payload.toString())
-    }
-
-    private fun dpToPx(value: Int): Int {
-        return (value * resources.displayMetrics.density).toInt()
-    }
+    private fun dpToPx(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun ensureOverlayPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         if (Settings.canDrawOverlays(this)) return
-        val prefs = getSharedPreferences(AlarmService.PREFS_NAME, MODE_PRIVATE)
-        val requested = prefs.getBoolean(KEY_OVERLAY_REQUESTED, false)
-        if (requested) return
+        val prefs = AppSettings.prefs(this)
+        if (prefs.getBoolean(KEY_OVERLAY_REQUESTED, false)) return
         prefs.edit().putBoolean(KEY_OVERLAY_REQUESTED, true).apply()
-        Toast.makeText(this, "Allow overlay to show alarm dismiss screen", Toast.LENGTH_LONG)
-            .show()
-        val intent = Intent(
-            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-            Uri.parse("package:$packageName")
+        Toast.makeText(this, "Allow overlay to show the alarm screen", Toast.LENGTH_LONG).show()
+        startActivity(
+            Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            )
         )
-        startActivity(intent)
     }
 
     private fun launchScanner() {

@@ -1,94 +1,144 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  The dismissal screen, over the lock screen.
+
+  The scale readout is the centre of this layout rather than a footnote. Someone
+  standing on a scale at 07:00 with a siren going needs to see the phone reacting
+  to them within a second, or the reasonable conclusion is that it is not
+  working — and the fix they reach for is the passphrase.
+-->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/bg_dark"
     android:padding="32dp">
 
-    <LinearLayout
+    <ScrollView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:orientation="vertical"
-        android:gravity="center_horizontal">
+        android:layout_gravity="center">
 
-        <TextView
-            android:id="@+id/alarm_name_text"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Alarm"
-            android:textColor="@color/text_primary"
-            android:textSize="32sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
-            android:id="@+id/instruction_text"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Step on the scale to stop the alarm"
-            android:textColor="@color/text_muted"
-            android:textSize="16sp"
-            android:gravity="center"
-            android:layout_marginBottom="24dp" />
+            android:orientation="vertical"
+            android:gravity="center_horizontal">
 
-        <!-- Soft alarms: one button, done. -->
-        <Button
-            android:id="@+id/dismiss_button"
-            android:layout_width="match_parent"
-            android:layout_height="72dp"
-            android:text="DISMISS"
-            android:textSize="20sp"
-            android:textStyle="bold"
-            android:textColor="@color/text_primary"
-            android:background="@color/primary_accent"
-            android:visibility="gone"
-            android:layout_marginBottom="24dp" />
+            <TextView
+                android:id="@+id/alarm_name_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Alarm"
+                android:textColor="@color/text_primary"
+                android:textSize="32sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
 
-        <!-- Hard alarms: the scale, or the passphrase as the escape hatch. -->
-        <TextView
-            android:id="@+id/passphrase_label"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="…or type the passphrase"
-            android:textColor="@color/text_muted"
-            android:textSize="14sp"
-            android:layout_marginBottom="8dp" />
+            <TextView
+                android:id="@+id/instruction_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Step on the scale to stop the alarm"
+                android:textColor="@color/text_muted"
+                android:textSize="16sp"
+                android:gravity="center"
+                android:layout_marginBottom="20dp" />
 
-        <EditText
-            android:id="@+id/passphrase_input"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="Start typing..."
-            android:textColor="@color/text_primary"
-            android:textColorHint="@color/text_muted"
-            android:background="@color/input_bg"
-            android:padding="16dp"
-            android:textSize="16sp"
-            android:inputType="text"
-            android:singleLine="true"
-            android:layout_marginBottom="16dp" />
+            <!-- Live from the scale. Hidden until the first advertisement, so it
+                 never shows a stale number from yesterday. -->
+            <TextView
+                android:id="@+id/live_weight"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="—"
+                android:textColor="@color/secondary_accent"
+                android:textSize="64sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
 
-        <TextView
-            android:id="@+id/try_again_text"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="TRY AGAIN!"
-            android:textColor="@color/error_red"
-            android:textSize="24sp"
-            android:textStyle="bold"
-            android:visibility="gone" />
+            <TextView
+                android:id="@+id/live_weight_caption"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textColor="@color/text_muted"
+                android:textSize="14sp"
+                android:gravity="center"
+                android:visibility="gone"
+                android:layout_marginBottom="20dp" />
 
-        <TextView
-            android:id="@+id/scale_status_text"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text=""
-            android:textColor="@color/secondary_accent"
-            android:textSize="13sp"
-            android:gravity="center"
-            android:layout_marginTop="16dp" />
+            <!-- Soft alarms: one button, done. -->
+            <Button
+                android:id="@+id/dismiss_button"
+                android:layout_width="match_parent"
+                android:layout_height="72dp"
+                android:text="DISMISS"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary"
+                android:background="@color/primary_accent"
+                android:visibility="gone"
+                android:layout_marginBottom="12dp" />
 
-    </LinearLayout>
+            <!-- A few more minutes, on the same terms. A snoozed hard alarm
+                 comes back hard. -->
+            <Button
+                android:id="@+id/snooze_button"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:text="SNOOZE"
+                android:textSize="16sp"
+                android:textAllCaps="true"
+                android:textColor="@color/text_primary"
+                android:background="@drawable/button_ghost"
+                android:visibility="gone"
+                android:layout_marginBottom="20dp" />
+
+            <!-- Hard alarms: the scale, or the passphrase as the escape hatch. -->
+            <TextView
+                android:id="@+id/passphrase_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="…or type the passphrase"
+                android:textColor="@color/text_muted"
+                android:textSize="14sp"
+                android:layout_marginBottom="8dp" />
+
+            <EditText
+                android:id="@+id/passphrase_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Start typing..."
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_muted"
+                android:background="@color/input_bg"
+                android:padding="16dp"
+                android:textSize="16sp"
+                android:inputType="text"
+                android:singleLine="true"
+                android:layout_marginBottom="16dp" />
+
+            <TextView
+                android:id="@+id/try_again_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="TRY AGAIN!"
+                android:textColor="@color/error_red"
+                android:textSize="24sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/scale_status_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textColor="@color/secondary_accent"
+                android:textSize="13sp"
+                android:gravity="center"
+                android:layout_marginTop="16dp" />
+
+        </LinearLayout>
+    </ScrollView>
 
 </FrameLayout>

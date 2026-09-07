@@ -2,11 +2,14 @@
 <!--
   Settings.
 
-  The previous version was a single centred column of differently-sized boxes
-  with hairline dividers between them, which gave the eye nothing to group on.
-  This is a stack of cards: one card per concern, a heading, left-aligned labels
-  with their values directly beneath, and actions at the bottom of the card they
+  A stack of cards: one card per concern, a heading, left-aligned labels with
+  their values directly beneath, and actions at the bottom of the card they
   belong to.
+
+  Ordered by how often it is touched and how much it matters. What rings next
+  is first. The scale rules and the dismissal rules are the two things a user
+  actually tunes, so they come before the connection to ontoplano, which is
+  optional and set up once.
 -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/settings_content"
@@ -28,125 +31,20 @@
 
             <TextView
                 android:id="@+id/next_alarm_status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                style="@style/SettingsValue"
                 android:text="No upcoming alarms"
-                android:textColor="@color/secondary_accent"
                 android:textSize="20sp" />
 
             <TextView
                 android:id="@+id/next_alarm_detail"
                 style="@style/SettingsCaption"
                 android:text="" />
-        </LinearLayout>
-
-        <!-- ── Service ─────────────────────────────────────────────── -->
-        <LinearLayout style="@style/SettingsCard">
-
-            <TextView style="@style/SettingsHeading" android:text="SERVICE" />
-
-            <TextView
-                android:id="@+id/service_status"
-                style="@style/SettingsValue"
-                android:text="Unknown" />
 
             <Button
-                android:id="@+id/service_toggle"
+                android:id="@+id/cancel_snooze"
                 style="@style/SettingsGhostButton"
-                android:text="Start service" />
-
-            <Switch
-                android:id="@+id/boot_toggle"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Start on boot"
-                android:textSize="15sp"
-                android:textColor="@color/text_primary"
-                android:layout_marginTop="14dp" />
-        </LinearLayout>
-
-        <!-- ── PC pairing ──────────────────────────────────────────── -->
-        <LinearLayout style="@style/SettingsCard">
-
-            <TextView style="@style/SettingsHeading" android:text="PC" />
-
-            <TextView
-                android:id="@+id/secret_status"
-                style="@style/SettingsValue"
-                android:text="Not paired" />
-
-            <TextView
-                android:id="@+id/pc_link_status"
-                style="@style/SettingsCaption"
-                android:text="Disconnected" />
-
-            <Button
-                android:id="@+id/scan_secret"
-                style="@style/SettingsGhostButton"
-                android:text="Scan pairing QR" />
-        </LinearLayout>
-
-        <!-- ── ontoplano ───────────────────────────────────────────── -->
-        <LinearLayout style="@style/SettingsCard">
-
-            <TextView style="@style/SettingsHeading" android:text="ONTOPLANO" />
-
-            <TextView
-                android:id="@+id/ontoplano_account"
-                style="@style/SettingsValue"
-                android:text="Not connected" />
-
-            <TextView
-                android:id="@+id/ontoplano_detail"
-                style="@style/SettingsCaption"
-                android:text="Weigh-ins are published from the PC." />
-
-            <TextView
-                style="@style/SettingsLabel"
-                android:text="Turn tasks into alarms"
-                android:layout_marginTop="16dp" />
-
-            <TextView
-                style="@style/SettingsCaption"
-                android:text="Tasks whose title matches become read-only alarms." />
-
-            <EditText
-                android:id="@+id/ontoplano_pattern"
-                style="@style/SettingsInput"
-                android:hint="^acordar"
-                android:inputType="text"
-                android:singleLine="true" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:baselineAligned="false"
-                android:layout_marginTop="8dp">
-
-                <TextView
-                    android:id="@+id/ontoplano_kind_hard"
-                    style="@style/SettingsSegment"
-                    android:background="@drawable/chip_hard"
-                    android:text="Hard" />
-
-                <TextView
-                    android:id="@+id/ontoplano_kind_soft"
-                    style="@style/SettingsSegment"
-                    android:background="@drawable/chip_soft"
-                    android:text="Soft"
-                    android:layout_marginStart="8dp" />
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/ontoplano_save"
-                style="@style/SettingsGhostButton"
-                android:text="Apply to PC" />
-
-            <TextView
-                android:id="@+id/ontoplano_status"
-                style="@style/SettingsCaption"
-                android:text="" />
+                android:text="Cancel snooze"
+                android:visibility="gone" />
         </LinearLayout>
 
         <!-- ── Scale ───────────────────────────────────────────────── -->
@@ -156,7 +54,7 @@
 
             <TextView
                 style="@style/SettingsLabel"
-                android:text="A hard alarm stops when the scale reports" />
+                android:text="A hard alarm stops when" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -168,19 +66,19 @@
                 <TextView
                     android:id="@+id/scale_mode_weight"
                     style="@style/SettingsSegment"
-                    android:text="Weight" />
+                    android:text="Socks on" />
 
                 <TextView
                     android:id="@+id/scale_mode_bodyfat"
                     style="@style/SettingsSegment"
-                    android:text="Body fat"
+                    android:text="Bare feet"
                     android:layout_marginStart="8dp" />
             </LinearLayout>
 
             <TextView
                 android:id="@+id/scale_mode_caption"
                 style="@style/SettingsCaption"
-                android:text="Stops as soon as your weight settles. Socks are fine." />
+                android:text="" />
 
             <TextView
                 android:id="@+id/readings_status"
@@ -193,24 +91,96 @@
                 style="@style/SettingsCaption"
                 android:text="" />
 
+            <Button
+                android:id="@+id/weigh_now"
+                style="@style/SettingsGhostButton"
+                android:text="Listen for scale" />
+
+            <TextView
+                android:id="@+id/live_reading"
+                style="@style/SettingsCaption"
+                android:text=""
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- ── Dismissal ───────────────────────────────────────────── -->
+        <LinearLayout style="@style/SettingsCard">
+
+            <TextView style="@style/SettingsHeading" android:text="DISMISSAL" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:baselineAligned="false">
+
+                <TextView
+                    style="@style/SettingsLabel"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:text="Passphrase escape hatch" />
+
+                <Switch
+                    android:id="@+id/passphrase_toggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/SettingsCaption"
+                android:text="Typing this stops a hard alarm without the scale. Turn it off to make the scale the only way out — including on a morning the scale battery is flat." />
+
+            <EditText
+                android:id="@+id/passphrase_field"
+                style="@style/SettingsInput"
+                android:hint="Passphrase"
+                android:inputType="textMultiLine"
+                android:minLines="2" />
+
+            <TextView
+                style="@style/SettingsLabel"
+                android:text="Snooze"
+                android:layout_marginTop="16dp" />
+
+            <TextView
+                style="@style/SettingsCaption"
+                android:text="A snoozed alarm comes back on the same terms — a hard one is still hard. Zero switches snooze off." />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:baselineAligned="false"
-                android:layout_marginTop="10dp">
+                android:layout_marginTop="8dp">
 
-                <Button
-                    android:id="@+id/weigh_now"
-                    style="@style/SettingsGhostButtonInline"
-                    android:text="Listen for scale" />
+                <TextView
+                    android:id="@+id/snooze_0"
+                    style="@style/SettingsSegment"
+                    android:text="Off" />
 
-                <Button
-                    android:id="@+id/upload_now"
-                    style="@style/SettingsGhostButtonInline"
-                    android:text="Upload now"
+                <TextView
+                    android:id="@+id/snooze_5"
+                    style="@style/SettingsSegment"
+                    android:text="5m"
+                    android:layout_marginStart="8dp" />
+
+                <TextView
+                    android:id="@+id/snooze_9"
+                    style="@style/SettingsSegment"
+                    android:text="9m"
+                    android:layout_marginStart="8dp" />
+
+                <TextView
+                    android:id="@+id/snooze_15"
+                    style="@style/SettingsSegment"
+                    android:text="15m"
                     android:layout_marginStart="8dp" />
             </LinearLayout>
+
+            <Button
+                android:id="@+id/dismissal_save"
+                style="@style/SettingsGhostButton"
+                android:text="Save dismissal settings" />
         </LinearLayout>
 
         <!-- ── Home network ────────────────────────────────────────── -->
@@ -234,6 +204,117 @@
                 android:text="Use current wifi as home" />
         </LinearLayout>
 
+        <!-- ── ontoplano ───────────────────────────────────────────── -->
+        <LinearLayout style="@style/SettingsCard">
+
+            <TextView style="@style/SettingsHeading" android:text="ONTOPLANO (OPTIONAL)" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:baselineAligned="false">
+
+                <TextView
+                    android:id="@+id/ontoplano_account"
+                    style="@style/SettingsValue"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:text="Not connected" />
+
+                <Switch
+                    android:id="@+id/ontoplano_toggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/ontoplano_detail"
+                style="@style/SettingsCaption"
+                android:text="Publishes weigh-ins and turns planned tasks into alarms. The app works fully without it." />
+
+            <EditText
+                android:id="@+id/ontoplano_base_url"
+                style="@style/SettingsInput"
+                android:hint="https://ontoplano.example.com"
+                android:inputType="textUri" />
+
+            <EditText
+                android:id="@+id/ontoplano_token"
+                style="@style/SettingsInput"
+                android:hint="Access token"
+                android:inputType="textPassword" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:baselineAligned="false"
+                android:layout_marginTop="12dp">
+
+                <Button
+                    android:id="@+id/ontoplano_save"
+                    style="@style/SettingsGhostButtonInline"
+                    android:text="Save + test" />
+
+                <Button
+                    android:id="@+id/scan_secret"
+                    style="@style/SettingsGhostButtonInline"
+                    android:text="Scan QR"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/ontoplano_status"
+                style="@style/SettingsCaption"
+                android:text=""
+                android:layout_marginTop="10dp" />
+
+            <TextView
+                style="@style/SettingsLabel"
+                android:text="Tasks that become alarms"
+                android:layout_marginTop="16dp" />
+
+            <TextView
+                style="@style/SettingsCaption"
+                android:text="A pattern matched against planned task titles. Leave empty and ontoplano never creates an alarm." />
+
+            <EditText
+                android:id="@+id/ontoplano_pattern"
+                style="@style/SettingsInput"
+                android:hint="e.g. wake up|acordar"
+                android:inputType="text" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:baselineAligned="false"
+                android:layout_marginTop="8dp">
+
+                <TextView
+                    android:id="@+id/ontoplano_kind_soft"
+                    style="@style/SettingsSegment"
+                    android:text="Soft" />
+
+                <TextView
+                    android:id="@+id/ontoplano_kind_hard"
+                    style="@style/SettingsSegment"
+                    android:text="Hard"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/ontoplano_kind_caption"
+                style="@style/SettingsCaption"
+                android:text="" />
+
+            <Button
+                android:id="@+id/ontoplano_rule_save"
+                style="@style/SettingsGhostButton"
+                android:text="Save rule and sync now" />
+        </LinearLayout>
+
         <!-- ── Permissions ─────────────────────────────────────────── -->
         <LinearLayout style="@style/SettingsCard">
 
@@ -248,6 +329,40 @@
                 android:id="@+id/grant_permissions"
                 style="@style/SettingsGhostButton"
                 android:text="Grant permissions" />
+        </LinearLayout>
+
+        <!-- ── About ───────────────────────────────────────────────── -->
+        <LinearLayout style="@style/SettingsCard">
+
+            <TextView style="@style/SettingsHeading" android:text="BACKGROUND" />
+
+            <TextView
+                android:id="@+id/service_status"
+                style="@style/SettingsValue"
+                android:text="Idle" />
+
+            <TextView
+                style="@style/SettingsCaption"
+                android:text="Massalarme runs nothing in the background. It wakes to ring, to read the scale, and to publish a weigh-in, then stops." />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:baselineAligned="false"
+                android:layout_marginTop="10dp">
+
+                <TextView
+                    style="@style/SettingsLabel"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:text="Restore alarms after a reboot" />
+
+                <Switch
+                    android:id="@+id/boot_toggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
         </LinearLayout>
 
     </LinearLayout>

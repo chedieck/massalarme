@@ -40,6 +40,9 @@
         android:name="android.hardware.bluetooth_le"
         android:required="true" />
 
+    <!-- usesCleartextTraffic: a self-hosted ontoplano on a home LAN is often
+         plain http. This app makes no other network requests, so it permits
+         exactly one thing: reaching the server address the user typed in. -->
     <application
         android:name=".App"
         android:label="Massalarme"
@@ -75,6 +78,14 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback|connectedDevice" />
+
+        <!-- Retries a failed ontoplano publish when the system next has a
+             network. Not a poller: it is scheduled only after a failure and
+             cancelled as soon as the queue drains. -->
+        <service
+            android:name=".SyncRetryJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <receiver
             android:name=".BootReceiver"

@@ -10,19 +10,6 @@
     android:orientation="vertical"
     android:background="@color/bg_dark">
 
-    <TextView
-        android:id="@+id/ws_status"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="\u25cf PC: disconnected"
-        android:textSize="12sp"
-        android:textColor="@color/ws_disconnected"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="5dp"
-        android:background="@color/bg_dark" />
-
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"

@@ -11,8 +11,8 @@ android {
         applicationId = "org.example.lanalarm"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "2.1"
+        versionCode = 4
+        versionName = "3.0"
     }
 
     buildTypes {
@@ -40,7 +40,6 @@ android {
 }
 
 dependencies {
-    implementation("org.nanohttpd:nanohttpd:2.3.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-ktx:1.9.0")
@@ -56,6 +55,10 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.12.2")
     testImplementation("androidx.test:core:1.5.0")
     testImplementation("androidx.test.ext:junit:1.1.5")
+    // The ontoplano client is now the only network path in the app; a real
+    // local server is the only honest way to test what it does with 401, 403,
+    // 429 and a partial-reject response body.
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
 
 kotlin {

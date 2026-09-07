@@ -2,171 +2,97 @@ package org.example.lanalarm
 
 import android.content.Context
 import android.util.Log
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
-import java.io.IOException
-import java.util.concurrent.TimeUnit
 
 /**
- * Ships queued weigh-ins to the PC, which republishes them to ontoplano.
+ * Drains the outbound weigh-in queue into ontoplano.
  *
- * Retries are safe by construction: `external_id` is derived from the reading,
- * so the PC answers a resend with `duplicates`, not a second point. That means
- * this uploader can be as eager as it likes — on a new reading, on regaining
- * connectivity, on app foreground — without risking the user's chart.
+ * Retries are safe by construction: `external_id` is derived from the reading
+ * itself, so a resend comes back as a duplicate rather than a second point on
+ * the user's chart. That is what lets this be as eager as it likes — after a
+ * weigh-in, on app foreground, whenever the network comes back — without any
+ * bookkeeping about what might already have landed.
+ *
+ * This used to POST to the PC daemon, which republished upwards. The daemon is
+ * no longer in the path.
  */
-class ReadingUploader(private val context: Context) {
+class ReadingUploader(private val context: Context, private val client: Ontoplano) {
 
     companion object {
         private const val TAG = "ReadingUploader"
-        private val JSON = "application/json; charset=utf-8".toMediaType()
-    }
 
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .build()
-
-    sealed class Result {
-        data class Delivered(val count: Int, val remaining: Int) : Result()
-        object NothingToDo : Result()
-        data class NotConfigured(val reason: String) : Result()
-        data class Failed(val reason: String) : Result()
+        /** Small enough that a flaky connection loses little, well under the server cap. */
+        const val BATCH = 100
     }
 
     /**
-     * Drain the queue. Blocking — call from a background thread.
+     * Ship everything pending and return how many rows left the queue.
+     *
+     * Throws [Ontoplano.Failure] on a failure the caller should report; a
+     * non-retryable one has already been recorded against the offending rows,
+     * so nothing is lost by giving up here.
      */
-    fun upload(): Result {
+    fun upload(): Int {
         val store = ReadingStore(context)
         try {
-            val secret = AppSettings.secret(context)
-                ?: return Result.NotConfigured("no shared secret — scan the QR code")
-            val baseUrl = AppSettings.pcBaseUrl(context)
-                ?: return Result.NotConfigured("PC address unknown — rescan the QR code")
-
             var delivered = 0
             while (true) {
-                val batch = store.pending(ReadingStore.MAX_BATCH)
-                if (batch.isEmpty()) break
+                val batch = store.pending(BATCH)
+                if (batch.isEmpty()) return delivered
 
                 val before = store.pendingCount()
-                val outcome = postBatch(store, baseUrl, secret, batch)
-                if (outcome is Result.Failed) {
-                    recordError(outcome.reason)
-                    return if (delivered > 0) {
-                        Result.Delivered(delivered, store.pendingCount())
+                val points = batch.map { reading ->
+                    Ontoplano.Point(
+                        externalId = reading.externalId,
+                        at = reading.capturedAtUtc,
+                        value = reading.weightKg,
+                        meta = JSONObject().apply {
+                            reading.impedance?.let { put("impedance", it) }
+                            reading.alarmName?.let { put("alarm_name", it) }
+                            reading.rawValue?.let { put("raw_value", it) }
+                            put("measurements", reading.measurements)
+                        }
+                    )
+                }
+
+                val ids = batch.map { it.externalId }
+                val result = try {
+                    client.pushPoints(points)
+                } catch (e: Ontoplano.Failure) {
+                    if (e.retryable) {
+                        // Hold the rows; the reading is the user's data and a
+                        // server having a bad minute is not a reason to lose it.
+                        store.recordAttempt(ids, e.message)
                     } else {
-                        outcome
+                        // Never going to be accepted. Recording the reason stops
+                        // the queue retrying it forever and leaves a trail.
+                        ids.forEach { store.markRejected(it, e.message ?: "rejected") }
                     }
-                }
-                delivered += (outcome as Result.Delivered).count
-
-                // If nothing left the queue this pass, the next one would fetch
-                // the same rows forever. Stop and let the next trigger retry.
-                if (store.pendingCount() >= before) {
-                    return Result.Failed("PC resolved none of ${batch.size} reading(s)")
-                }
-            }
-
-            if (delivered == 0) return Result.NothingToDo
-
-            recordSuccess()
-            return Result.Delivered(delivered, store.pendingCount())
-        } finally {
-            store.close()
-        }
-    }
-
-    private fun postBatch(
-        store: ReadingStore,
-        baseUrl: String,
-        secret: String,
-        batch: List<ReadingStore.Reading>
-    ): Result {
-        val payload = JSONObject().apply {
-            put("readings", JSONArray().apply {
-                batch.forEach { reading ->
-                    put(JSONObject().apply {
-                        put("external_id", reading.externalId)
-                        put("captured_at", reading.capturedAtUtc)
-                        put("weight_kg", reading.weightKg)
-                        reading.impedance?.let { put("impedance", it) }
-                        reading.rawValue?.let { put("raw_value", it) }
-                        reading.alarmName?.let { put("alarm_name", it) }
-                        put("measurements", reading.measurements)
-                    })
-                }
-            })
-        }
-
-        val request = Request.Builder()
-            .url("$baseUrl/readings?key=$secret")
-            .post(payload.toString().toRequestBody(JSON))
-            .build()
-
-        val ids = batch.map { it.externalId }
-
-        return try {
-            http.newCall(request).execute().use { response ->
-                if (response.code == 403) {
-                    store.recordAttempt(ids, "PC rejected the shared secret")
-                    return Result.Failed("PC rejected the shared secret — rescan the QR code")
-                }
-                if (!response.isSuccessful) {
-                    store.recordAttempt(ids, "HTTP ${response.code}")
-                    return Result.Failed("PC returned HTTP ${response.code}")
+                    throw e
                 }
 
-                val body = JSONObject(response.body?.string().orEmpty())
-                val rejected = body.optJSONArray("rejected") ?: JSONArray()
-                val rejectedIds = mutableSetOf<String>()
-                for (i in 0 until rejected.length()) {
-                    val entry = rejected.optJSONObject(i) ?: continue
-                    val externalId = entry.optString("external_id")
-                    val reason = entry.optString("reason", "unspecified")
-                    if (externalId.isNotBlank()) {
-                        rejectedIds.add(externalId)
-                        // Malformed readings never become valid. Stop resending.
-                        store.markRejected(externalId, reason)
-                    }
-                }
-
-                // Anything not explicitly rejected was stored, whether it counted
-                // as accepted or duplicate. Both mean the PC has it.
-                val stored = ids.filterNot { rejectedIds.contains(it) }
-                store.markSynced(stored)
+                result.rejected.forEach { (id, reason) -> store.markRejected(id, reason) }
+                store.markSynced(result.delivered)
+                delivered += result.delivered.size
 
                 Log.i(
                     TAG,
-                    "Uploaded ${stored.size} reading(s), ${rejectedIds.size} rejected"
+                    "Pushed ${result.delivered.size} reading(s), " +
+                        "${result.duplicates} already known, ${result.rejected.size} rejected"
                 )
-                Result.Delivered(stored.size, store.pendingCount())
+
+                // If nothing left the queue this pass, the next one would fetch
+                // the same rows forever.
+                if (store.pendingCount() >= before) {
+                    throw Ontoplano.Failure(
+                        "ontoplano resolved none of ${batch.size} reading(s)",
+                        null,
+                        retryable = true
+                    )
+                }
             }
-        } catch (e: IOException) {
-            store.recordAttempt(ids, e.message ?: "network error")
-            Result.Failed("PC unreachable: ${e.message}")
-        } catch (e: org.json.JSONException) {
-            store.recordAttempt(ids, "malformed response")
-            Result.Failed("PC returned a malformed response")
+        } finally {
+            store.close()
         }
-    }
-
-    private fun recordSuccess() {
-        AppSettings.prefs(context).edit()
-            .putString(AppSettings.KEY_LAST_UPLOAD_OK, ScaleCodec.utcIso(System.currentTimeMillis()))
-            .putString(AppSettings.KEY_LAST_UPLOAD_ERROR, null)
-            .apply()
-    }
-
-    private fun recordError(reason: String) {
-        AppSettings.prefs(context).edit()
-            .putString(AppSettings.KEY_LAST_UPLOAD_ERROR, reason)
-            .apply()
-        Log.w(TAG, "Upload failed: $reason")
     }
 }

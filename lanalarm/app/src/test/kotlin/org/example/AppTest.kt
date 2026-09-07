@@ -237,89 +237,88 @@ class AlarmScheduleTest {
 }
 
 /**
- * Pairing payload parsing.
+ * Connection payload parsing.
  *
- * The strings below are literally what `alarm_manager.encode_provisioning`
- * emits. If the two ever disagree, `make secret` produces a code the app cannot
- * act on — which is exactly how pairing broke once.
+ * This is the step that decides whether the app can be set up at all, and it
+ * failed silently once already — a QR code the app quietly did not understand
+ * looks exactly like a QR code it read and ignored.
  */
 class ProvisioningTest {
 
     companion object {
-        private const val SECRET =
-            "0d0f6d6f3a893d52d1275da38087d5f3d359e2d36800c0eaf502edbdc3fff710"
+        private const val TOKEN = "onto_pat_0000000000000000000000000000test"
+        private const val BASE = "https://ontoplano.example.com"
     }
 
     @Test
-    fun `parses the compact payload the PC emits`() {
+    fun `parses the connect URI`() {
         val payload = Provisioning.parse(
-            "MA2:${SECRET.uppercase()}:192.168.1.5:8888:164:68:90"
+            "massalarme://connect?base=https%3A%2F%2Fontoplano.example.com&token=$TOKEN"
         )!!
-
-        // Stored lowercase: the PC uppercases only to stay in QR alphanumeric
-        // mode, but the secret it compares against is lowercase hex.
-        assertEquals(SECRET, payload.secret)
-        assertEquals("192.168.1.5", payload.pcHost)
-        assertEquals(8888, payload.pcPort)
-        assertEquals(164, payload.stableFlag)
-        assertEquals(68f, payload.minWeightKg!!, 0.001f)
-        assertEquals(90, payload.sessionGapSeconds)
+        assertEquals(BASE, payload.baseUrl)
+        assertEquals(TOKEN, payload.token)
     }
 
     @Test
-    fun `parses a fractional minimum weight`() {
-        val payload = Provisioning.parse("MA2:${SECRET.uppercase()}:host:8888:164:67.5:90")!!
-        assertEquals(67.5f, payload.minWeightKg!!, 0.001f)
-    }
-
-    @Test
-    fun `a truncated payload still yields the secret`() {
-        val payload = Provisioning.parse("MA2:${SECRET.uppercase()}")!!
-        assertEquals(SECRET, payload.secret)
-        assertNull(payload.pcHost)
-        assertNull(payload.pcPort)
-    }
-
-    @Test
-    fun `still accepts a bare hex secret from an older PC`() {
-        val payload = Provisioning.parse(SECRET)!!
-        assertEquals(SECRET, payload.secret)
-        assertNull(payload.pcHost)
-    }
-
-    @Test
-    fun `still accepts the earlier JSON payload`() {
+    fun `field order does not matter`() {
         val payload = Provisioning.parse(
-            """{"v":2,"secret":"$SECRET","pc_host":"10.0.0.2","pc_port":9999,""" +
-                """"scale":{"stable_flag":166,"min_weight_kg":70.0,"session_gap_seconds":60}}"""
+            "massalarme://connect?token=$TOKEN&base=https%3A%2F%2Fontoplano.example.com"
         )!!
-
-        assertEquals(SECRET, payload.secret)
-        assertEquals("10.0.0.2", payload.pcHost)
-        assertEquals(9999, payload.pcPort)
-        assertEquals(166, payload.stableFlag)
-        assertEquals(60, payload.sessionGapSeconds)
+        assertEquals(BASE, payload.baseUrl)
+        assertEquals(TOKEN, payload.token)
     }
 
     @Test
-    fun `rejects text that is not a pairing payload`() {
+    fun `parses the JSON payload`() {
+        val payload = Provisioning.parse(
+            """{"base_url":"$BASE/","token":"$TOKEN"}"""
+        )!!
+        // The trailing slash is dropped: keeping it would make every request
+        // path a double slash, which some gateways answer with a 404 that looks
+        // exactly like a missing stream.
+        assertEquals(BASE, payload.baseUrl)
+        assertEquals(TOKEN, payload.token)
+    }
+
+    @Test
+    fun `a bare token carries no server address`() {
+        val payload = Provisioning.parse(TOKEN)!!
+        assertEquals(TOKEN, payload.token)
+        assertNull(payload.baseUrl)
+    }
+
+    @Test
+    fun `a bare host is assumed to be https`() {
+        val payload = Provisioning.parse(
+            """{"base_url":"ontoplano.example.com","token":"$TOKEN"}"""
+        )!!
+        assertEquals(BASE, payload.baseUrl)
+    }
+
+    @Test
+    fun `an explicit http base is left alone`() {
+        // A self-hoster on a home LAN really does mean http, and silently
+        // upgrading them to https would make the app unusable for them.
+        val payload = Provisioning.parse(
+            """{"base_url":"http://192.168.1.20:8000","token":"$TOKEN"}"""
+        )!!
+        assertEquals("http://192.168.1.20:8000", payload.baseUrl)
+    }
+
+    @Test
+    fun `rejects text that is not a connection payload`() {
         assertNull(Provisioning.parse(null))
         assertNull(Provisioning.parse(""))
         assertNull(Provisioning.parse("https://example.com"))
-        assertNull(Provisioning.parse("MA2:not-a-secret:host:8888"))
-        assertNull(Provisioning.parse("{\"secret\":\"too-short\"}"))
+        assertNull(Provisioning.parse("massalarme://connect?base=$BASE"))
+        assertNull(Provisioning.parse("""{"base_url":"$BASE"}"""))
+        assertNull(Provisioning.parse("wifi password: hunter2"))
     }
 
     @Test
-    fun `nonsense field values are ignored rather than stored`() {
-        val payload = Provisioning.parse(
-            "MA2:${SECRET.uppercase()}:192.168.1.5:99999:999:-4:0"
-        )!!
-
-        assertEquals(SECRET, payload.secret)
-        assertNull(payload.pcPort)           // out of range
-        assertNull(payload.stableFlag)       // not a byte
-        assertNull(payload.minWeightKg)      // negative
-        assertNull(payload.sessionGapSeconds)
+    fun `normaliseBase treats blank as absent`() {
+        assertNull(Provisioning.normaliseBase(null))
+        assertNull(Provisioning.normaliseBase("   "))
+        assertNull(Provisioning.normaliseBase("/"))
     }
 }

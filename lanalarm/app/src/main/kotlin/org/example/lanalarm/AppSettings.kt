@@ -7,26 +7,20 @@ import android.util.Log
 /**
  * Every persisted setting in one place.
  *
- * The phone is now the autonomous half of massalarme: it schedules its own
- * alarms, listens to the scale itself, and reports upwards. That means it needs
- * the scale decoding parameters and the PC's address, not just a shared secret.
- * All of it arrives in one QR code from `make secret`.
+ * The phone is the whole of massalarme now. It holds the schedule, listens to
+ * the scale, rings, and reports upwards to ontoplano over the internet. There is
+ * no PC in the path, so there is no PC address, no LAN secret and no pairing
+ * state here any more — what is left is the user's own configuration.
  */
 object AppSettings {
 
     const val PREFS_NAME = "massalarme_prefs"
-
-    // Provisioning
-    const val KEY_SECRET = "shared_secret"
-    const val KEY_PC_IP = "pc_ip"
-    const val KEY_PC_PORT = "pc_port"
 
     // Alarm data
     const val KEY_ALARMS = "alarms_json"
     const val KEY_LAST_SYNC = "last_sync"
 
     // Scale decoding
-    const val KEY_SCALE_NAME = "scale_name"
     const val KEY_SCALE_STABLE_FLAG = "scale_stable_flag"
     const val KEY_SCALE_MIN_WEIGHT = "scale_min_weight"
     const val KEY_SCALE_SESSION_GAP = "scale_session_gap"
@@ -35,33 +29,45 @@ object AppSettings {
     const val KEY_HOME_SSID = "home_ssid"
     const val KEY_HOME_BSSID = "home_bssid"
 
-    // Which ontoplano tasks become alarms. Held here and pushed to the PC,
-    // which is the side that actually talks to ontoplano.
+    // ontoplano, reached directly from the phone.
+    const val KEY_ONTOPLANO_ENABLED = "ontoplano_enabled"
+    const val KEY_ONTOPLANO_BASE_URL = "ontoplano_base_url"
+    const val KEY_ONTOPLANO_TOKEN = "ontoplano_token"
     const val KEY_ONTOPLANO_PATTERN = "ontoplano_pattern"
     const val KEY_ONTOPLANO_KIND = "ontoplano_kind"
 
-    // Upload state, for the status surface
+    // Dismissal
+    const val KEY_PASSPHRASE = "dismiss_passphrase"
+    const val KEY_PASSPHRASE_ENABLED = "dismiss_passphrase_enabled"
+    const val KEY_SNOOZE_MINUTES = "snooze_minutes"
+
+    // Sync state, for the status surface
     const val KEY_LAST_UPLOAD_OK = "last_upload_ok"
     const val KEY_LAST_UPLOAD_ERROR = "last_upload_error"
     const val KEY_LAST_WEIGHT = "last_weight"
     const val KEY_LAST_WEIGHT_AT = "last_weight_at"
 
-    const val DEFAULT_PC_PORT = 8888
-    const val DEFAULT_SCALE_NAME = "MIBFS"
-
     /**
      * Which scale advertisement satisfies a hard alarm.
      *
-     * These are the two flags this scale actually emits, confirmed against the
-     * weight log: every `0x26` reading carries an impedance value and every
-     * `0xa4` reading does not. (Some documentation claims `0xa6` for the
-     * body-fat case; this hardware does not use it.)
+     * Byte 1 of the Xiaomi advertisement is a bitfield. Bit 5 means the reading
+     * settled, bit 1 means an impedance value came with it, and bit 7 means the
+     * weight has been taken off the scale. That gives the two states this
+     * hardware actually finishes in, confirmed against the weight log:
      *
-     * The choice is seasonal in practice — bare feet are needed for the
-     * impedance measurement, which is a lot to ask on a cold morning.
+     *  - `0x26` — settled *with* impedance. The body-fat measurement worked,
+     *    which needs bare feet.
+     *  - `0xa4` — settled, no impedance, weight removed. The scale gave up on
+     *    body fat and reported the weight alone. This is what socks produce.
+     *
+     * (Some documentation claims `0xa6` for the body-fat case; this hardware
+     * does not use it.)
      */
     const val FLAG_WEIGHT_ONLY = 0xa4
     const val FLAG_BODY_FAT = 0x26
+
+    /** Bit 5 of byte 1: the reading has settled and is worth recording. */
+    const val BIT_STABILIZED = 0x20
 
     const val DEFAULT_STABLE_FLAG = FLAG_WEIGHT_ONLY
     const val DEFAULT_MIN_WEIGHT_KG = 30f
@@ -69,23 +75,25 @@ object AppSettings {
     /** Advertisements closer together than this are one trip to the scale. */
     const val DEFAULT_SESSION_GAP_SECONDS = 90
 
+    /**
+     * The escape hatch for a hard alarm, kept long enough that typing it is a
+     * real decision rather than a reflex.
+     *
+     * This used to be a constant compiled into the app, which meant it was the
+     * same for everybody and could not be changed by the person it was supposed
+     * to inconvenience. It is a default now, not a rule.
+     */
+    const val DEFAULT_PASSPHRASE =
+        "The Industrial Revolution and its consequences have been a disaster for the human race."
+
+    const val DEFAULT_SNOOZE_MINUTES = 9
+
     private const val TAG = "Settings"
 
     fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    fun secret(context: Context): String? =
-        prefs(context).getString(KEY_SECRET, null)?.takeIf { it.isNotBlank() }
-
-    fun pcBaseUrl(context: Context): String? {
-        val prefs = prefs(context)
-        val host = prefs.getString(KEY_PC_IP, null)?.takeIf { it.isNotBlank() } ?: return null
-        val port = prefs.getInt(KEY_PC_PORT, DEFAULT_PC_PORT)
-        return "http://$host:$port"
-    }
-
-    fun scaleName(context: Context): String =
-        prefs(context).getString(KEY_SCALE_NAME, DEFAULT_SCALE_NAME) ?: DEFAULT_SCALE_NAME
+    // ─── Scale ───────────────────────────────────────────────────────
 
     fun stableFlag(context: Context): Int =
         prefs(context).getInt(KEY_SCALE_STABLE_FLAG, DEFAULT_STABLE_FLAG)
@@ -102,18 +110,39 @@ object AppSettings {
     fun sessionGapSeconds(context: Context): Int =
         prefs(context).getInt(KEY_SCALE_SESSION_GAP, DEFAULT_SESSION_GAP_SECONDS)
 
-    fun ontoplanoPattern(context: Context): String =
-        prefs(context).getString(KEY_ONTOPLANO_PATTERN, "") ?: ""
+    // ─── Dismissal ───────────────────────────────────────────────────
 
-    fun ontoplanoKind(context: Context): String =
-        prefs(context).getString(KEY_ONTOPLANO_KIND, "hard") ?: "hard"
+    fun passphrase(context: Context): String =
+        prefs(context).getString(KEY_PASSPHRASE, null)?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_PASSPHRASE
 
-    fun setOntoplanoRule(context: Context, pattern: String, kind: String) {
+    /**
+     * Whether the passphrase escape hatch exists at all.
+     *
+     * On by default: being locked out by a flat scale battery is worse than the
+     * occasional cheat. Someone who wants no way out but the scale can say so.
+     */
+    fun passphraseEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_PASSPHRASE_ENABLED, true)
+
+    fun setPassphrase(context: Context, phrase: String?, enabled: Boolean) {
         prefs(context).edit()
-            .putString(KEY_ONTOPLANO_PATTERN, pattern.trim())
-            .putString(KEY_ONTOPLANO_KIND, kind)
+            .putString(KEY_PASSPHRASE, phrase?.trim()?.takeIf { it.isNotBlank() })
+            .putBoolean(KEY_PASSPHRASE_ENABLED, enabled)
             .apply()
     }
+
+    fun snoozeMinutes(context: Context): Int =
+        prefs(context).getInt(KEY_SNOOZE_MINUTES, DEFAULT_SNOOZE_MINUTES)
+
+    /** Zero turns snooze off entirely; the upper bound keeps it a snooze. */
+    fun setSnoozeMinutes(context: Context, minutes: Int) {
+        prefs(context).edit().putInt(KEY_SNOOZE_MINUTES, minutes.coerceIn(0, 60)).apply()
+    }
+
+    fun snoozeEnabled(context: Context): Boolean = snoozeMinutes(context) > 0
+
+    // ─── Home network ────────────────────────────────────────────────
 
     fun homeSsid(context: Context): String? =
         prefs(context).getString(KEY_HOME_SSID, null)?.takeIf { it.isNotBlank() }
@@ -128,27 +157,85 @@ object AppSettings {
             .apply()
     }
 
+    // ─── ontoplano ───────────────────────────────────────────────────
+
+    fun ontoplanoEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_ONTOPLANO_ENABLED, false)
+
+    fun ontoplanoBaseUrl(context: Context): String? =
+        prefs(context).getString(KEY_ONTOPLANO_BASE_URL, null)?.takeIf { it.isNotBlank() }
+
+    fun ontoplanoToken(context: Context): String? =
+        SecretStore.get(context, KEY_ONTOPLANO_TOKEN)
+
+    /** Did the token actually make it into the keystore? Surfaced, not hidden. */
+    fun ontoplanoTokenProtected(context: Context): Boolean =
+        SecretStore.isProtected(context, KEY_ONTOPLANO_TOKEN)
+
+    fun setOntoplano(context: Context, baseUrl: String?, token: String?, enabled: Boolean) {
+        prefs(context).edit()
+            .putString(KEY_ONTOPLANO_BASE_URL, Provisioning.normaliseBase(baseUrl))
+            .putBoolean(KEY_ONTOPLANO_ENABLED, enabled)
+            .apply()
+        // Only overwrite the token when one was actually supplied: the settings
+        // screen shows a masked field, and saving it back would otherwise store
+        // the mask.
+        token?.let { SecretStore.put(context, KEY_ONTOPLANO_TOKEN, it) }
+    }
+
+    fun setOntoplanoEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_ONTOPLANO_ENABLED, enabled).apply()
+    }
+
     /**
-     * Apply a scanned pairing payload. See [Provisioning] for the accepted
+     * A ready client, or null when sync is off or half-configured.
+     *
+     * Returning null rather than a client that fails on first use is what lets
+     * every caller treat "no ontoplano" as an ordinary state instead of an error
+     * to report — which it is: this app works with no account at all.
+     */
+    fun ontoplanoClient(context: Context): Ontoplano? {
+        if (!ontoplanoEnabled(context)) return null
+        val baseUrl = ontoplanoBaseUrl(context) ?: return null
+        val token = ontoplanoToken(context) ?: return null
+        return Ontoplano(Ontoplano.Config(baseUrl = baseUrl, token = token))
+    }
+
+    fun ontoplanoPattern(context: Context): String =
+        prefs(context).getString(KEY_ONTOPLANO_PATTERN, "") ?: ""
+
+    fun ontoplanoKind(context: Context): String =
+        prefs(context).getString(KEY_ONTOPLANO_KIND, AlarmSchedule.KIND_SOFT)
+            ?: AlarmSchedule.KIND_SOFT
+
+    fun setOntoplanoRule(context: Context, pattern: String, kind: String) {
+        prefs(context).edit()
+            .putString(KEY_ONTOPLANO_PATTERN, pattern.trim())
+            .putString(KEY_ONTOPLANO_KIND, kind)
+            .apply()
+    }
+
+    // ─── Provisioning ────────────────────────────────────────────────
+
+    /**
+     * Apply a scanned connection payload. See [Provisioning] for the accepted
      * shapes. Returns false if the text is none of them.
      */
     fun applyProvisioning(context: Context, scanned: String): Boolean {
         val payload = Provisioning.parse(scanned)
         if (payload == null) {
-            Log.w(TAG, "Scanned text is not a recognised pairing payload")
+            Log.w(TAG, "Scanned text is not a recognised connection payload")
             return false
         }
 
-        val editor = prefs(context).edit()
-        editor.putString(KEY_SECRET, payload.secret)
-        payload.pcHost?.let { editor.putString(KEY_PC_IP, it) }
-        payload.pcPort?.let { editor.putInt(KEY_PC_PORT, it) }
-        payload.stableFlag?.let { editor.putInt(KEY_SCALE_STABLE_FLAG, it) }
-        payload.minWeightKg?.let { editor.putFloat(KEY_SCALE_MIN_WEIGHT, it) }
-        payload.sessionGapSeconds?.let { editor.putInt(KEY_SCALE_SESSION_GAP, it) }
-        editor.apply()
+        val baseUrl = payload.baseUrl ?: ontoplanoBaseUrl(context)
+        if (baseUrl == null) {
+            Log.w(TAG, "Scanned a token but no server address is configured")
+            return false
+        }
 
-        Log.i(TAG, "Paired with ${payload.pcHost ?: "unknown host"}:${payload.pcPort ?: "?"}")
+        setOntoplano(context, baseUrl, payload.token, enabled = true)
+        Log.i(TAG, "Connected to ontoplano at $baseUrl")
         return true
     }
 }

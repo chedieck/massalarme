@@ -19,19 +19,32 @@ import androidx.core.content.ContextCompat
  * Listens to the Xiaomi body-composition scale directly from the phone.
  *
  * This used to live in the PC daemon. Moving it here is what lets the alarm work
- * with the PC asleep — the phone senses, rings, and only reports afterwards.
+ * with nothing else switched on — the phone senses, rings, and reports upwards
+ * afterwards.
  *
- * Two jobs, deliberately separate:
+ * Three jobs, deliberately separate, because they answer three different
+ * questions:
  *
- *  - [ScaleListener.onStableWeight] fires on the *first* stable advertisement.
- *    That is what silences a hard alarm; the user should not stand there waiting.
+ *  - [ScaleListener.onLiveWeight] fires on *every* readable advertisement,
+ *    settled or not. This is what the dismiss screen shows: standing on a scale
+ *    while a siren goes and seeing nothing happen for four seconds reads as a
+ *    broken app. The scale is talking the whole time; there is no reason to keep
+ *    it to ourselves.
+ *  - [ScaleListener.onStableWeight] fires when a reading arrives that satisfies
+ *    the user's chosen stop condition. That, and only that, silences a hard
+ *    alarm.
  *  - [ScaleListener.onWeighInComplete] fires once the scale has gone quiet for
- *    [AppSettings.sessionGapSeconds]. That is the reading worth recording: the scale
- *    keeps adjusting for a few seconds as the user settles, and the last value is
- *    the true one.
+ *    [AppSettings.sessionGapSeconds]. That is the reading worth recording: the
+ *    scale keeps adjusting for a few seconds as the user settles.
+ *
+ * The split between the last two matters. What stops the alarm is a *setting* —
+ * bare feet wait for the body-fat reading, socks stop at the plain weight — but
+ * what gets recorded should not depend on it. Filtering the session by the stop
+ * flag, as this once did, meant a morning in socks with the app in body-fat mode
+ * threw the weigh-in away entirely.
  *
  * The advertisement payload is the same one the Python daemon decoded, so the
- * byte offsets below match `alarm_manager.wait_for_weight` exactly.
+ * byte offsets in [ScaleCodec] match `alarm_manager.wait_for_weight` exactly.
  */
 class ScaleScanner(private val context: Context) {
 
@@ -44,7 +57,10 @@ class ScaleScanner(private val context: Context) {
     }
 
     interface ScaleListener {
-        /** First stable reading of a session — silences a hard alarm. */
+        /** Every readable advertisement, settled or still climbing. For display. */
+        fun onLiveWeight(reading: ScaleCodec.ScaleReading)
+
+        /** First reading that meets the stop condition — silences a hard alarm. */
         fun onStableWeight(reading: ScaleCodec.ScaleReading)
 
         /** The session settled. This is the reading that gets recorded. */
@@ -181,23 +197,24 @@ class ScaleScanner(private val context: Context) {
 
     private fun handlePayload(payload: ByteArray) {
         val reading = ScaleCodec.decode(payload, System.currentTimeMillis()) ?: return
-        val stableFlag = AppSettings.stableFlag(context)
-        val minWeight = AppSettings.minWeightKg(context)
+        if (reading.weightKg <= AppSettings.minWeightKg(context)) return
 
-        if (reading.flag != stableFlag || reading.weightKg <= minWeight) {
-            return
-        }
+        // Show it whatever state it is in. A number climbing towards the user's
+        // weight is the clearest possible evidence the scale is being heard.
+        listener?.onLiveWeight(reading)
+
+        if (!reading.isFinal) return
 
         // Identical payloads are the same measurement rebroadcast — the scale's
         // own clock is embedded, so equal bytes never mean two distinct readings.
-        val alreadySeen = sessionReadings.any { it.rawValue == reading.rawValue }
-        if (!alreadySeen) {
+        if (sessionReadings.none { it.rawValue == reading.rawValue }) {
             sessionReadings.add(reading)
         }
 
-        if (!sessionAnnounced) {
+        // The stop condition is the user's setting; recording above is not.
+        if (!sessionAnnounced && reading.flag == AppSettings.stableFlag(context)) {
             sessionAnnounced = true
-            Log.i(TAG, "Stable weight: %.2f kg".format(reading.weightKg))
+            Log.i(TAG, "Stop condition met at %.2f kg".format(reading.weightKg))
             listener?.onStableWeight(reading)
         }
 
@@ -212,9 +229,12 @@ class ScaleScanner(private val context: Context) {
             return
         }
 
-        // The scale is still settling until the last distinct payload, so that is
-        // the reading the user actually cares about.
-        val canonical = sessionReadings.last()
+        // The scale is still settling until the last distinct payload, so the
+        // last one is the reading the user cares about — except when an earlier
+        // one carried impedance and the last did not. Stepping off produces a
+        // final weight-only advertisement, and preferring it would silently
+        // discard the body-fat measurement the user stood still for.
+        val canonical = sessionReadings.lastOrNull { it.hasImpedance } ?: sessionReadings.last()
         val distinct = sessionReadings.size
 
         sessionReadings = mutableListOf()

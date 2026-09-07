@@ -12,23 +12,34 @@ import org.json.JSONObject
 /**
  * The phone's own alarm clock.
  *
- * Previously the PC watched the clock and pushed `/alarm` over the LAN at the
- * right moment, which meant no PC (or no wifi) was the same as no alarm. Now the
- * schedule is data the phone holds and `AlarmManager` fires locally. The PC is
- * only a peer to sync the schedule with.
+ * The PC used to watch the clock and push `/alarm` over the LAN at the right
+ * moment, which meant no PC — or no wifi — was the same as no alarm. The
+ * schedule is data the phone holds and `AlarmManager` fires locally.
  *
- * Only the *next* alarm is registered at a time. It reschedules after every
- * fire, on boot, on time changes, and whenever the schedule is edited.
+ * Two registrations exist at a time, deliberately kept apart:
+ *
+ *  - the *next scheduled* alarm, replaced whenever the schedule changes;
+ *  - a *snooze*, which is a one-off the user just asked for.
+ *
+ * They use different request codes so booking one never silently cancels the
+ * other. Sharing a code would mean snoozing at 07:00 quietly discarded the 07:30
+ * alarm, which is the sort of thing you only find out about the morning it
+ * matters.
  */
 object AlarmScheduler {
 
     private const val TAG = "AlarmScheduler"
     private const val REQUEST_CODE = 0x4D41 // 'MA'
+    private const val SNOOZE_REQUEST_CODE = 0x4D43
 
     const val ACTION_FIRE = "org.example.lanalarm.FIRE_ALARM"
     const val EXTRA_ALARM_ID = "alarm_id"
     const val EXTRA_ALARM_NAME = "alarm_name"
     const val EXTRA_ALARM_KIND = "alarm_kind"
+    const val EXTRA_SNOOZED = "snoozed"
+
+    private const val KEY_SNOOZE_AT = "snooze_at"
+    private const val KEY_SNOOZE_ALARM_ID = "snooze_alarm_id"
 
     /**
      * Register the next upcoming alarm, replacing any previously registered one.
@@ -40,6 +51,8 @@ object AlarmScheduler {
             AppSettings.prefs(context).getString(AppSettings.KEY_ALARMS, null)
         )
 
+        dropStaleSnooze(context, alarms)
+
         val next = AlarmSchedule.nextAlarm(alarms)
         if (next == null) {
             cancel(context)
@@ -48,7 +61,6 @@ object AlarmScheduler {
         }
 
         val (alarm, triggerAt) = next
-        val intent = firePendingIntent(context, alarm)
 
         if (!canScheduleExact(alarmManager)) {
             // Without exact alarms the OS may delay us by minutes, which for an
@@ -61,44 +73,115 @@ object AlarmScheduler {
         // Doze, and the system shows it as a real alarm in the status bar.
         alarmManager.setAlarmClock(
             AlarmManager.AlarmClockInfo(triggerAt, showIntent(context)),
-            intent
+            firePendingIntent(context, REQUEST_CODE, alarm.id, alarm.name, alarm.kind, false)
         )
 
-        Log.i(
-            TAG,
-            "Next alarm '${alarm.name}' (${alarm.kind}) at ${ScaleCodec.utcIso(triggerAt)}"
-        )
+        Log.i(TAG, "Next alarm '${alarm.name}' (${alarm.kind}) at ${ScaleCodec.utcIso(triggerAt)}")
         return triggerAt
     }
 
     fun cancel(context: Context) {
-        val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
-        val intent = Intent(context, AlarmReceiver::class.java).setAction(ACTION_FIRE)
-        val pending = PendingIntent.getBroadcast(
-            context, REQUEST_CODE, intent,
-            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        cancelPending(context, REQUEST_CODE)
+    }
+
+    // ─── Snooze ──────────────────────────────────────────────────────
+
+    /**
+     * Ring this same alarm again in [minutes]. Returns when it will go off.
+     *
+     * The snooze keeps the alarm's id, name and kind, so a snoozed hard alarm
+     * comes back hard: snoozing is asking for a few more minutes, not talking
+     * the app out of its job.
+     */
+    fun snooze(context: Context, id: String, name: String, kind: String, minutes: Int): Long {
+        val alarmManager = context.getSystemService(AlarmManager::class.java)
+        val at = System.currentTimeMillis() + minutes * 60_000L
+
+        alarmManager?.setAlarmClock(
+            AlarmManager.AlarmClockInfo(at, showIntent(context)),
+            firePendingIntent(context, SNOOZE_REQUEST_CODE, id, name, kind, true)
         )
-        pending?.let {
-            alarmManager.cancel(it)
-            it.cancel()
+
+        AppSettings.prefs(context).edit()
+            .putLong(KEY_SNOOZE_AT, at)
+            .putString(KEY_SNOOZE_ALARM_ID, id)
+            .apply()
+
+        Log.i(TAG, "Snoozed '$name' for ${minutes}m")
+        return at
+    }
+
+    /** When a snooze is due, or null. Past times are treated as gone. */
+    fun pendingSnooze(context: Context): Long? =
+        AppSettings.prefs(context).getLong(KEY_SNOOZE_AT, 0L)
+            .takeIf { it > System.currentTimeMillis() }
+
+    fun cancelSnooze(context: Context) {
+        cancelPending(context, SNOOZE_REQUEST_CODE)
+        clearSnoozeRecord(context)
+    }
+
+    fun clearSnoozeRecord(context: Context) {
+        AppSettings.prefs(context).edit()
+            .remove(KEY_SNOOZE_AT)
+            .remove(KEY_SNOOZE_ALARM_ID)
+            .apply()
+    }
+
+    /**
+     * Drop a snooze whose alarm the user has since turned off or deleted.
+     *
+     * Without this, disabling an alarm you had just snoozed leaves it booked and
+     * it rings anyway — which reads as the switch not working.
+     */
+    private fun dropStaleSnooze(context: Context, alarms: List<AlarmSchedule.Alarm>) {
+        val prefs = AppSettings.prefs(context)
+        if (prefs.getLong(KEY_SNOOZE_AT, 0L) <= 0L) return
+
+        val snoozedId = prefs.getString(KEY_SNOOZE_ALARM_ID, null)
+        // A snooze with no id came from a source we cannot re-check; leave it.
+        if (snoozedId.isNullOrBlank()) return
+
+        val alarm = alarms.firstOrNull { it.id == snoozedId }
+        if (alarm == null || !alarm.isActive) {
+            Log.i(TAG, "Snoozed alarm $snoozedId is gone — cancelling the snooze")
+            cancelSnooze(context)
         }
     }
 
+    // ─── Description for the UI ──────────────────────────────────────
+
     /** The headline: what rings next and how far away it is. */
     fun nextAlarmDescription(context: Context): String {
-        val next = nextAlarm(context) ?: return "No upcoming alarms"
-        val (alarm, triggerAt) = next
-        return "${alarm.name} ${countdown(triggerAt)}"
+        val snoozeAt = pendingSnooze(context)
+        val next = nextAlarm(context)
+
+        // A snooze is usually sooner than anything on the schedule, and a
+        // headline that ignores it is simply wrong about when the phone will
+        // next make a noise.
+        if (snoozeAt != null && (next == null || snoozeAt < next.second)) {
+            return "Snoozed ${countdown(snoozeAt)}"
+        }
+        if (next == null) return "No upcoming alarms"
+        return "${next.first.name} ${countdown(next.second)}"
     }
 
     /** The supporting line: when exactly, and what kind. */
     fun nextAlarmDetail(context: Context): String {
-        val next = nextAlarm(context) ?: return ""
-        val (alarm, triggerAt) = next
-        val at = java.text.SimpleDateFormat("EEEE d MMM, HH:mm", java.util.Locale.getDefault())
-            .format(java.util.Date(triggerAt))
-        val kind = if (alarm.isHard) "hard — needs the scale" else "soft — one tap"
-        return "$at · $kind"
+        val snoozeAt = pendingSnooze(context)
+        val next = nextAlarm(context)
+
+        val at = when {
+            snoozeAt != null && (next == null || snoozeAt < next.second) -> snoozeAt
+            next != null -> next.second
+            else -> return ""
+        }
+        val when_ = java.text.SimpleDateFormat("EEEE d MMM, HH:mm", java.util.Locale.getDefault())
+            .format(java.util.Date(at))
+
+        if (snoozeAt == at) return "$when_ · snoozed"
+        val alarm = next?.first ?: return when_
+        return "$when_ · " + if (alarm.isHard) "hard — needs the scale" else "soft — one tap"
     }
 
     private fun nextAlarm(context: Context): Pair<AlarmSchedule.Alarm, Long>? =
@@ -116,20 +199,42 @@ object AlarmScheduler {
         }
     }
 
+    // ─── PendingIntent plumbing ──────────────────────────────────────
+
     private fun canScheduleExact(alarmManager: AlarmManager): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
 
-    private fun firePendingIntent(context: Context, alarm: AlarmSchedule.Alarm): PendingIntent {
+    private fun firePendingIntent(
+        context: Context,
+        requestCode: Int,
+        id: String,
+        name: String,
+        kind: String,
+        snoozed: Boolean
+    ): PendingIntent {
         val intent = Intent(context, AlarmReceiver::class.java).apply {
             action = ACTION_FIRE
-            putExtra(EXTRA_ALARM_ID, alarm.id)
-            putExtra(EXTRA_ALARM_NAME, alarm.name)
-            putExtra(EXTRA_ALARM_KIND, alarm.kind)
+            putExtra(EXTRA_ALARM_ID, id)
+            putExtra(EXTRA_ALARM_NAME, name)
+            putExtra(EXTRA_ALARM_KIND, kind)
+            putExtra(EXTRA_SNOOZED, snoozed)
         }
         return PendingIntent.getBroadcast(
-            context, REQUEST_CODE, intent,
+            context, requestCode, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+    }
+
+    private fun cancelPending(context: Context, requestCode: Int) {
+        val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
+        val intent = Intent(context, AlarmReceiver::class.java).setAction(ACTION_FIRE)
+        PendingIntent.getBroadcast(
+            context, requestCode, intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )?.let {
+            alarmManager.cancel(it)
+            it.cancel()
+        }
     }
 
     private fun showIntent(context: Context): PendingIntent {
@@ -160,9 +265,14 @@ class AlarmReceiver : BroadcastReceiver() {
                 val name = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_NAME) ?: "Alarm"
                 val kind = intent.getStringExtra(AlarmScheduler.EXTRA_ALARM_KIND)
                     ?: AlarmSchedule.KIND_HARD
+                val snoozed = intent.getBooleanExtra(AlarmScheduler.EXTRA_SNOOZED, false)
 
-                Log.i(TAG, "Alarm '$name' ($kind) fired")
-                retireOneShot(context, alarmId)
+                Log.i(TAG, "Alarm '$name' ($kind) fired${if (snoozed) " from a snooze" else ""}")
+                if (snoozed) {
+                    AlarmScheduler.clearSnoozeRecord(context)
+                } else {
+                    retireOneShot(context, alarmId)
+                }
 
                 val serviceIntent = Intent(context, AlarmService::class.java).apply {
                     action = AlarmService.ACTION_START_ALARM
@@ -196,8 +306,7 @@ class AlarmReceiver : BroadcastReceiver() {
         if (AlarmSchedule.disableOneShot(root, alarmId)) {
             prefs.edit().putString(AppSettings.KEY_ALARMS, root.toString()).apply()
             Log.i(TAG, "One-shot alarm $alarmId retired")
-            AlarmService.instance?.pushAlarmsToPC(root.toString())
-            // The schedule just changed without the UI asking, same as a sync.
+            // The schedule just changed without the UI asking.
             context.sendBroadcast(
                 Intent(AlarmService.ACTION_ALARMS_CHANGED).setPackage(context.packageName)
             )

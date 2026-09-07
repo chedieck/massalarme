@@ -22,7 +22,7 @@ class App : Application() {
                 "Massalarme Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Keeps the alarm listener running"
+                description = "Shown while an alarm is ringing or the scale is being read"
             }
         )
 

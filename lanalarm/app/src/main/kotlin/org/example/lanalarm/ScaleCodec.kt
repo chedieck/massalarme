@@ -22,13 +22,40 @@ object ScaleCodec {
     /** The scale reports this when it never got an impedance reading. */
     private const val IMPEDANCE_UNSET = 65533.0
 
+    /**
+     * Byte 1 of the advertisement is a bitfield, not an opaque tag.
+     *
+     * Naming the bits is what makes the live readout possible: an
+     * advertisement that is not yet stabilised still carries a real weight,
+     * and showing it is the difference between a number that climbs as you
+     * step on and a screen that says nothing for four seconds.
+     */
+    private const val BIT_HAS_IMPEDANCE = 0x02
+    private const val BIT_STABILIZED = 0x20
+    private const val BIT_WEIGHT_REMOVED = 0x80
+
     data class ScaleReading(
         val flag: Int,
         val weightKg: Double,
         val impedance: Double?,
         val rawValue: String,
         val capturedAtMillis: Long
-    )
+    ) {
+        /** The scale has settled on this number; it is no longer climbing. */
+        val isStabilized: Boolean get() = flag and BIT_STABILIZED != 0
+
+        /** The body-composition measurement completed. Needs bare feet. */
+        val hasImpedance: Boolean get() = flag and BIT_HAS_IMPEDANCE != 0
+
+        /** The user has stepped off. The scale reports this once, at the end. */
+        val weightRemoved: Boolean get() = flag and BIT_WEIGHT_REMOVED != 0
+
+        /**
+         * Worth writing down. An unstabilised reading is the scale thinking
+         * out loud — fine to display, wrong to record as a weigh-in.
+         */
+        val isFinal: Boolean get() = isStabilized
+    }
 
     private fun utcFormatter(): SimpleDateFormat =
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {

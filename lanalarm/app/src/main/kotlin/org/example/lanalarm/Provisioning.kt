@@ -1,88 +1,88 @@
 package org.example.lanalarm
 
 import org.json.JSONObject
-import java.util.Locale
 
 /**
- * Parsing of the pairing payload carried by the QR code from `make secret`.
+ * Parsing the ontoplano connection payload behind the QR code.
+ *
+ * The QR used to carry a shared secret and a PC's LAN address. There is no PC in
+ * the path any more, so it now carries what the phone actually needs to reach
+ * ontoplano: a base URL and a bearer token. Typing a 40-character token into a
+ * phone keyboard is the kind of setup step people abandon halfway.
  *
  * Kept pure and free of Android imports so it can be unit-tested — this is the
  * step that decides whether the app can be set up at all, and it failed silently
  * once already.
  *
- * Three accepted shapes, newest first:
+ * Three accepted shapes:
  *
- *  1. `MA2:<SECRET>:<host>:<port>:<flag>:<min_kg>:<gap>` — the compact form.
- *     Everything stays inside QR's alphanumeric mode so the code is sparse
- *     enough to read off a terminal.
- *  2. A JSON object — an earlier revision. Far denser as a QR, hence replaced,
- *     but still understood.
- *  3. A bare hex string — the original secret-only code, from a PC that does not
- *     yet know how to share its address.
+ *  1. `massalarme://connect?base=<url-encoded>&token=<token>` — the URI form,
+ *     which is also what a "connect this device" link can open directly.
+ *  2. A JSON object `{"base_url": "…", "token": "…"}`.
+ *  3. A bare token, for when the server address is already configured.
  */
 object Provisioning {
 
-    const val PREFIX = "MA2"
+    const val SCHEME = "massalarme://connect"
 
-    data class Payload(
-        val secret: String,
-        val pcHost: String? = null,
-        val pcPort: Int? = null,
-        val stableFlag: Int? = null,
-        val minWeightKg: Float? = null,
-        val sessionGapSeconds: Int? = null
-    )
+    data class Payload(val baseUrl: String?, val token: String)
 
     fun parse(scanned: String?): Payload? {
         val text = scanned?.trim().orEmpty()
         if (text.isEmpty()) return null
 
         return when {
-            text.startsWith("$PREFIX:") -> parseCompact(text)
+            text.startsWith(SCHEME) -> parseUri(text)
             text.startsWith("{") -> parseJson(text)
-            isHexSecret(text) -> Payload(secret = text)
+            looksLikeToken(text) -> Payload(baseUrl = null, token = text)
             else -> null
         }
     }
 
-    private fun isHexSecret(text: String): Boolean =
-        text.matches(Regex("[0-9a-fA-F]{32,}"))
+    /**
+     * Loose on purpose. A token format is the server's business and will
+     * outlive any pattern hardcoded here; all this has to rule out is a QR code
+     * from a bus ticket. Whitespace is the real tell — tokens do not contain it.
+     */
+    private fun looksLikeToken(text: String): Boolean =
+        text.length in 16..512 && text.none { it.isWhitespace() } && !text.contains("://")
 
-    private fun parseCompact(text: String): Payload? {
-        val parts = text.split(":")
-        // prefix + secret, plus optional trailing fields.
-        if (parts.size < 2) return null
+    private fun parseUri(text: String): Payload? {
+        val query = text.substringAfter('?', "")
+        if (query.isEmpty()) return null
 
-        val secret = parts[1].trim()
-        if (!isHexSecret(secret)) return null
+        val fields = query.split("&").mapNotNull { pair ->
+            val key = pair.substringBefore('=', "")
+            val value = pair.substringAfter('=', "")
+            if (key.isEmpty() || value.isEmpty()) null else key to decode(value)
+        }.toMap()
 
-        return Payload(
-            // Stored lowercase whatever the QR said: the PC uppercases it purely
-            // to stay in alphanumeric mode, but the shared secret it compares
-            // against is lowercase hex.
-            secret = secret.lowercase(Locale.US),
-            pcHost = parts.getOrNull(2)?.trim()?.takeIf { it.isNotEmpty() },
-            pcPort = parts.getOrNull(3)?.trim()?.toIntOrNull()?.takeIf { it in 1..65535 },
-            stableFlag = parts.getOrNull(4)?.trim()?.toIntOrNull()?.takeIf { it in 0..255 },
-            minWeightKg = parts.getOrNull(5)?.trim()?.toFloatOrNull()?.takeIf { it > 0f },
-            sessionGapSeconds = parts.getOrNull(6)?.trim()?.toIntOrNull()?.takeIf { it > 0 }
-        )
+        val token = fields["token"]?.trim().orEmpty()
+        if (token.isEmpty()) return null
+        return Payload(baseUrl = normaliseBase(fields["base"] ?: fields["base_url"]), token = token)
     }
 
     private fun parseJson(text: String): Payload? {
         val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
-        val secret = json.optString("secret").trim()
-        if (!isHexSecret(secret)) return null
-
-        val scale = json.optJSONObject("scale")
+        val token = json.optString("token").trim()
+        if (token.isEmpty()) return null
         return Payload(
-            secret = secret.lowercase(Locale.US),
-            pcHost = json.optString("pc_host").takeIf { it.isNotBlank() },
-            pcPort = json.optInt("pc_port", 0).takeIf { it in 1..65535 },
-            stableFlag = scale?.optInt("stable_flag", -1)?.takeIf { it in 0..255 },
-            minWeightKg = scale?.optDouble("min_weight_kg", -1.0)
-                ?.takeIf { it > 0 }?.toFloat(),
-            sessionGapSeconds = scale?.optInt("session_gap_seconds", 0)?.takeIf { it > 0 }
+            baseUrl = normaliseBase(json.optString("base_url").takeIf { it.isNotBlank() }),
+            token = token
         )
     }
+
+    /**
+     * A trailing slash here becomes a double slash in every request path, and
+     * some gateways answer that with a 404 that looks like a missing stream.
+     */
+    fun normaliseBase(raw: String?): String? {
+        val text = raw?.trim()?.trimEnd('/').orEmpty()
+        if (text.isEmpty()) return null
+        return if (text.contains("://")) text else "https://$text"
+    }
+
+    /** Percent-decoding, enough for a URL inside a query parameter. */
+    private fun decode(value: String): String =
+        runCatching { java.net.URLDecoder.decode(value, "UTF-8") }.getOrDefault(value)
 }
