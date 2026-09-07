@@ -103,25 +103,44 @@ is the whole of setup. See [Android setup](#android-setup).
 
 ## Legacy PC daemon
 
-Everything from here to [Android setup](#android-setup) describes the Python
-daemon, which the app no longer talks to. Skip it unless you are running it
-deliberately.
+The Python daemon used to be required: it held the schedule, watched the clock,
+and drove the phone over the LAN. None of that is true now, and it no longer runs
+as a service — `make install` and the systemd unit are gone, along with the
+targets that rang or silenced the phone over HTTP, since the phone no longer
+listens on a port.
 
-## PC setup
+What survives is a handful of one-shot commands, and only two reasons to run any
+of them:
 
-### Configuration
+**Getting a token onto the phone without typing it.**
 
-After `make install`, config files live in XDG paths:
+```bash
+make daemon-setup                       # venv, deps, ~/.config/massalarme/config.yaml
+$EDITOR ~/.config/massalarme/config.yaml   # set ontoplano.base_url
+make set-token                          # paste the token; stored 0600
+make phone-qr                           # scan this from the app
+```
 
-| File | Path | Purpose |
-|------|------|---------|
-| `config.yaml` | `~/.config/massalarme/config.yaml` | Phone MAC, network, port, scale params, shared secret |
-| `alarms.json` | `~/.config/massalarme/alarms.json` | Alarm schedule |
-| `weights.db` | `~/.local/share/massalarme/weights.db` | Weight log (SQLite) |
+**Moving the weight history this repo already holds into ontoplano.** The old
+`weights.db` has years of raw scale rows in it; the phone's store only has what
+the phone itself has measured.
 
-Edit `config.yaml` with your phone's Bluetooth MAC address and LAN subnet.
+```bash
+make backfill      # collapse the raw log into weigh-ins
+make sync-now      # push the queue
+make sync-status   # pending count, last success, last error
+```
+
+`make listen` prints what the scale is broadcasting, which is the fastest way to
+check the hardware end of things. `make run` still starts the daemon in the
+foreground if you want to poke at it; nothing on the phone will talk to it.
+
+If you installed the old systemd unit, `make remove-service` takes it away.
 
 ### Alarm schedule format
+
+The phone stores its schedule in this shape. The daemon reads the same format
+from `~/.config/massalarme/alarms.json`.
 
 ```json
 {
@@ -155,9 +174,6 @@ Edit `config.yaml` with your phone's Bluetooth MAC address and LAN subnet.
 }
 ```
 
-Each alarm has a unique `id` and an `updated_at` timestamp (epoch ms) used for
-sync conflict resolution between PC and phone — latest edit wins.
-
 Add `"kind": "soft"` for a dismissible alarm. Omitted or anything else means
 `hard`: every alarm that existed before this setting was introduced behaved that
 way, and quietly downgrading a wake-up alarm is the wrong direction to fail in.
@@ -166,44 +182,38 @@ way, and quietly downgrading a wake-up alarm is the wrong direction to fail in.
 - **Date-specific**: set `date` to `DD-MM-YYYY` (no `days` field)
 - **One-shot**: set `type` to `"next"` (fires once at next occurrence)
 
-Times can be `HH:MM` or `HH:MM:SS`. Old v1 format (per-day keys) is auto-migrated.
-
-### Service management
-
-```bash
-make start          # Start the daemon
-make stop           # Stop the daemon
-make restart        # Restart
-make status         # systemctl status
-make logs           # journalctl -f
-make enable         # Enable on login
-make disable        # Disable on login
-```
+Times can be `HH:MM` or `HH:MM:SS`. `updated_at` is epoch ms; a deleted alarm is
+kept as `"deleted": true` for thirty days so an ontoplano re-sync propagates the
+deletion instead of bringing the alarm back.
 
 ### Makefile targets
 
+`make` on its own lists these.
+
 | Target | Description |
 |--------|-------------|
-| `make install` | Full setup: uv venv, XDG dirs, configs, systemd service |
-| `make run` | Run daemon directly (foreground, for debugging) |
-| `make phone-qr` | Show the QR the phone scans to reach ontoplano |
-| `make secret` | Legacy LAN pairing QR. The app no longer reads it. |
-| `make test` | Run the Python and Kotlin test suites |
-| `make set-token` | Store the ontoplano API token (0600 file, prompts if `TOKEN=` omitted) |
+| `make apk` | Build the Android debug APK |
+| `make apk-install` | Build and install via adb |
+| `make test` | Both test suites |
+| `make test-py` / `make test-apk` | One of them |
+| `make daemon-setup` | One-off: venv, deps, config file |
+| `make set-token` | Store the ontoplano token (0600 file; prompts if `TOKEN=` omitted) |
+| `make phone-qr` | Show the QR the app scans to reach ontoplano |
 | `make check-ontoplano` | Verify the token and show its scopes |
-| `make backfill` | Collapse the raw scale log into weigh-ins and queue the history |
-| `make sync-status` | Pending count, last success, last error |
-| `make sync-now` | Drain the ontoplano queue once |
-| `make schedule-now` | Pull the planner once and apply derived alarms |
-| `make alarms` | Show upcoming alarms with time remaining |
-| `make listen` | Live BLE scale debug — shows flags and weight |
-| `make start/stop/restart/status` | systemd service control |
-| `make logs` | Follow journal logs |
-| `make enable/disable` | Autostart on login |
-| `make apk` | Build Android debug APK |
-| `make apk-install` | Build and install APK via adb |
-| `make clean` | Remove venv |
-| `make uninstall` | Remove service, XDG files, venv |
+| `make backfill` | Collapse the raw scale log into weigh-ins |
+| `make sync-now` / `make sync-status` | Push the queue / inspect it |
+| `make listen` | Live BLE scale debug — flags and weight |
+| `make alarms` | Upcoming alarms per the daemon's copy |
+| `make run` | Legacy daemon in the foreground |
+| `make clean` | Remove the venv and Android build output |
+| `make remove-service` | Remove the old systemd unit |
+
+`make apk` finds your SDK from `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`,
+`~/Android/Sdk` or `/opt/android-sdk`, and writes `lanalarm/local.properties`
+itself. That file is untracked and machine-specific; it is also rewritten
+whenever it points at a directory that no longer exists, because Gradle prefers
+it over `$ANDROID_HOME` and a stale path there fails the build on a machine with
+a perfectly good SDK.
 
 ## Android setup
 
@@ -320,8 +330,6 @@ massalarme/
 ├── tests/                  # pytest suite + a mock ontoplano server
 ├── Makefile                # Common tasks
 ├── requirements.txt        # Python dependencies
-├── massalarme.service      # systemd unit template
-├── install.sh              # Setup script
 ├── config.yaml.example     # Config template
 ├── alarms.json.example     # Schedule template
 └── lanalarm/               # Android app
