@@ -72,11 +72,10 @@ class ScaleScanner(private val context: Context) {
     private var listener: ScaleListener? = null
     private var scanning = false
 
-    // Open session state.
-    private var sessionReadings = mutableListOf<ScaleCodec.ScaleReading>()
-    private var sessionAnnounced = false
+    /** The rules live in [ScaleSession]; this class only owns the radio. */
+    private var session: ScaleSession? = null
 
-    private val commitRunnable = Runnable { commitSession() }
+    private val commitRunnable = Runnable { session?.commit() }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -117,7 +116,7 @@ class ScaleScanner(private val context: Context) {
      * scale is still talking, and it must not be cut short at the moment the
      * alarm goes quiet — the first stable reading is not the final one.
      */
-    fun hasOpenSession(): Boolean = sessionReadings.isNotEmpty()
+    fun hasOpenSession(): Boolean = session?.isOpen() == true
 
     /**
      * @param highPriority scan at full duty cycle. Worth it while an alarm is
@@ -142,6 +141,11 @@ class ScaleScanner(private val context: Context) {
         }
 
         this.listener = listener
+        session = ScaleSession(
+            stopFlag = AppSettings.stableFlag(context),
+            minWeightKg = AppSettings.minWeightKg(context).toDouble(),
+            listener = listener
+        )
         scanner = adapter.bluetoothLeScanner
         if (scanner == null) {
             Log.e(TAG, "No BLE scanner available")
@@ -190,62 +194,19 @@ class ScaleScanner(private val context: Context) {
         // Do not discard an in-flight session: the user stepped on the scale,
         // that reading is real, and dropping it loses data massalarme owns.
         handler.removeCallbacks(commitRunnable)
-        commitSession()
+        session?.commit()
     }
 
     // ─── Session assembly ────────────────────────────────────────────
 
     private fun handlePayload(payload: ByteArray) {
         val reading = ScaleCodec.decode(payload, System.currentTimeMillis()) ?: return
-        if (reading.weightKg <= AppSettings.minWeightKg(context)) return
+        val open = session ?: return
 
-        // Show it whatever state it is in. A number climbing towards the user's
-        // weight is the clearest possible evidence the scale is being heard.
-        listener?.onLiveWeight(reading)
-
-        if (!reading.isFinal) return
-
-        // Identical payloads are the same measurement rebroadcast — the scale's
-        // own clock is embedded, so equal bytes never mean two distinct readings.
-        if (sessionReadings.none { it.rawValue == reading.rawValue }) {
-            sessionReadings.add(reading)
+        // Restart the quiet timer: the trip ends when the scale stops talking.
+        if (open.offer(reading)) {
+            handler.removeCallbacks(commitRunnable)
+            handler.postDelayed(commitRunnable, AppSettings.sessionGapSeconds(context) * 1000L)
         }
-
-        // The stop condition is the user's setting; recording above is not.
-        if (!sessionAnnounced && reading.flag == AppSettings.stableFlag(context)) {
-            sessionAnnounced = true
-            Log.i(TAG, "Stop condition met at %.2f kg".format(reading.weightKg))
-            listener?.onStableWeight(reading)
-        }
-
-        // Restart the quiet timer: the session ends when the scale stops talking.
-        handler.removeCallbacks(commitRunnable)
-        handler.postDelayed(commitRunnable, AppSettings.sessionGapSeconds(context) * 1000L)
-    }
-
-    private fun commitSession() {
-        if (sessionReadings.isEmpty()) {
-            sessionAnnounced = false
-            return
-        }
-
-        // The scale is still settling until the last distinct payload, so the
-        // last one is the reading the user cares about — except when an earlier
-        // one carried impedance and the last did not. Stepping off produces a
-        // final weight-only advertisement, and preferring it would silently
-        // discard the body-fat measurement the user stood still for.
-        val canonical = sessionReadings.lastOrNull { it.hasImpedance } ?: sessionReadings.last()
-        val distinct = sessionReadings.size
-
-        sessionReadings = mutableListOf()
-        sessionAnnounced = false
-
-        Log.i(
-            TAG,
-            "Weigh-in complete: %.2f kg from %d measurement(s)".format(
-                canonical.weightKg, distinct
-            )
-        )
-        listener?.onWeighInComplete(canonical, distinct)
     }
 }

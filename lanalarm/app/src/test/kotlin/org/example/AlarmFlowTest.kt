@@ -162,24 +162,25 @@ class AlarmFlowTest {
         assertEquals(1, storedTimes().size)
     }
 
-    // ─── A schedule pushed in by the PC must redraw the UI ───────────
+    // ─── A schedule written behind the UI's back must redraw it ─────
 
     @Test
     fun `a schedule change from the service redraws the open list`() {
         createAlarm(7, 30)
         assertEquals(listOf("07:30"), rowTimes())
 
-        // The PC syncs in a newer copy, exactly as AlarmService does.
+        // An ontoplano sync rewrites storage while the tab is open, exactly as
+        // OntoplanoSync does — and as a one-shot retiring after it fires does.
         val stored = JSONObject(
             AppSettings.prefs(context).getString(AppSettings.KEY_ALARMS, null)!!
         )
         val id = AlarmSchedule.parse(stored.toString()).first().id
-        val merged = AlarmSchedule.merge(
-            stored,
-            schedule(alarmJson(id, "06:00", updatedAt = System.currentTimeMillis() + 10_000))
-        )
         AppSettings.prefs(context).edit()
-            .putString(AppSettings.KEY_ALARMS, merged.toString()).commit()
+            .putString(
+                AppSettings.KEY_ALARMS,
+                schedule(alarmJson(id, "06:00", updatedAt = System.currentTimeMillis()))
+                    .toString()
+            ).commit()
 
         context.sendBroadcast(
             Intent(AlarmService.ACTION_ALARMS_CHANGED).setPackage(context.packageName)

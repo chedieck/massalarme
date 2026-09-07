@@ -8,12 +8,12 @@ import java.util.Locale
 /**
  * Alarm-schedule reading and next-occurrence maths.
  *
- * This mirrors `alarm_manager.get_next_alarm_time` on the PC. Both sides now
- * compute occurrences, because the phone schedules its own alarms and the PC
- * still logs what is coming up — they must agree, so the rules live here in one
- * readable place and are covered by unit tests.
+ * The phone is the only thing that computes occurrences now. The rules still
+ * mirror `alarm_manager.get_next_alarm_time`, which is the reference the tests
+ * were written against, and they live here in one readable place because
+ * getting them subtly wrong means an alarm on the wrong day.
  *
- * Schedule format (v2), as stored in `alarms.json` and synced over WebSocket:
+ * Schedule format (v2):
  *
  *   weekly     -> "days": ["monday", ...]
  *   dated      -> "date": "DD-MM-YYYY"
@@ -169,8 +169,9 @@ object AlarmSchedule {
     /**
      * Replace or append an alarm in the stored schedule and return the new root.
      *
-     * Tombstones rather than removes on delete, so the PC's merge propagates the
-     * deletion instead of resurrecting the alarm on the next sync.
+     * Deleting is done by tombstoning rather than removing — see
+     * [pruneTombstones] — so an ontoplano re-sync propagates the deletion
+     * instead of quietly bringing the alarm back.
      */
     fun upsert(root: JSONObject, alarm: Alarm): JSONObject {
         val array = root.optJSONArray("alarms") ?: JSONArray()
@@ -190,61 +191,31 @@ object AlarmSchedule {
     }
 
     /**
-     * Merge the phone's schedule with the PC's, per alarm id.
+     * Drop tombstones that have done their job.
      *
-     * Last write wins on `updated_at`, and a tie keeps the incumbent — the copy
-     * already held locally. Both sides must agree on that rule or an edit can
-     * ping-pong between them forever; `alarm_manager.merge_alarms` implements
-     * the same one, and `MergeTest` pins the two together.
+     * A deleted alarm is kept as `deleted: true` rather than removed, so an
+     * ontoplano re-sync propagates the deletion instead of resurrecting the
+     * alarm. That only has to hold for as long as a sync could plausibly still
+     * be carrying the old copy; past that the entry is dead weight, and without
+     * this the stored schedule grows for every alarm the user ever deleted.
      *
-     * Tombstones are kept so a deletion propagates instead of the alarm being
-     * resurrected by the next sync, and pruned once they are older than
-     * [TOMBSTONE_MAX_AGE_MS] so the schedule does not grow without bound.
-     *
-     * This lived inside AlarmService, where it could not be tested at all —
-     * which is how the sync path went unverified while it decided whether the
-     * user's alarm still existed.
+     * Matches `alarm_manager._prune_old_tombstones(max_age_days=30)`.
      */
-    fun merge(
-        local: JSONObject,
-        remote: JSONObject,
-        now: Long = System.currentTimeMillis()
-    ): JSONObject {
-        val mergedById = linkedMapOf<String, JSONObject>()
+    fun pruneTombstones(root: JSONObject, now: Long = System.currentTimeMillis()): JSONObject {
+        val alarms = root.optJSONArray("alarms") ?: return root
+        val cutoff = now - TOMBSTONE_MAX_AGE_MS
 
-        fun mergeFrom(source: JSONObject, replaceIfNewer: Boolean) {
-            val alarms = source.optJSONArray("alarms") ?: JSONArray()
-            for (i in 0 until alarms.length()) {
-                val alarm = alarms.optJSONObject(i) ?: continue
-                val id = alarm.optString("id")
-                if (id.isBlank()) continue
-
-                val candidate = JSONObject(alarm.toString())
-                val existing = mergedById[id]
-                if (existing == null) {
-                    mergedById[id] = candidate
-                    continue
-                }
-                if (!replaceIfNewer) continue
-
-                val existingAt = existing.optLong("updated_at", Long.MIN_VALUE)
-                val candidateAt = candidate.optLong("updated_at", Long.MIN_VALUE)
-                if (candidateAt > existingAt) mergedById[id] = candidate
-            }
+        val kept = JSONArray()
+        for (i in 0 until alarms.length()) {
+            val alarm = alarms.optJSONObject(i) ?: continue
+            val isAncientTombstone = alarm.optBoolean("deleted", false) &&
+                alarm.optLong("updated_at", Long.MAX_VALUE) < cutoff
+            if (!isAncientTombstone) kept.put(alarm)
         }
 
-        mergeFrom(local, replaceIfNewer = false)
-        mergeFrom(remote, replaceIfNewer = true)
-
-        val cutoffMs = now - TOMBSTONE_MAX_AGE_MS
-        val pruned = mergedById.values.filter { alarm ->
-            !(alarm.optBoolean("deleted", false) &&
-                alarm.optLong("updated_at", Long.MAX_VALUE) < cutoffMs)
-        }
-
-        return JSONObject().apply {
+        return root.apply {
             put("version", 2)
-            put("alarms", JSONArray().apply { pruned.forEach { put(it) } })
+            put("alarms", kept)
         }
     }
 

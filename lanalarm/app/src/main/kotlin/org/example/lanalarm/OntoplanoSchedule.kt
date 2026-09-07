@@ -254,10 +254,13 @@ object OntoplanoSchedule {
 
         derivedById.forEach { (id, alarm) -> if (id !in seen) merged.put(alarm) }
 
-        return JSONObject().apply {
-            put("version", 2)
-            put("alarms", merged)
-        }
+        return AlarmSchedule.pruneTombstones(
+            JSONObject().apply {
+                put("version", 2)
+                put("alarms", merged)
+            },
+            nowMs
+        )
     }
 
     private fun sameIgnoringTimestamp(a: JSONObject, b: JSONObject): Boolean {

@@ -949,7 +949,7 @@ class MainActivity : AppCompatActivity() {
     private fun saveAlarm(alarm: AlarmSchedule.Alarm) {
         val prefs = AppSettings.prefs(this)
         val root = loadAlarmsRoot(prefs.getString(AppSettings.KEY_ALARMS, null))
-        val updated = AlarmSchedule.upsert(root, alarm)
+        val updated = AlarmSchedule.pruneTombstones(AlarmSchedule.upsert(root, alarm))
 
         prefs.edit().putString(AppSettings.KEY_ALARMS, updated.toString()).apply()
         AlarmScheduler.rescheduleNext(this)

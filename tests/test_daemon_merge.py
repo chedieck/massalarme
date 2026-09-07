@@ -1,13 +1,15 @@
-"""The phone and the PC must merge schedules identically.
+"""Schedule merging in the daemon.
 
-Both sides hold a copy of the schedule and both may edit it offline, so the
-merge rule is the thing that decides whether an edit survives. If the two
-implementations disagree the schedule ping-pongs: each side "corrects" the
-other on every sync and the user's alarm quietly reverts.
+The phone no longer syncs its schedule with this daemon -- it holds the schedule
+itself and reaches ontoplano directly -- so the Kotlin counterpart of these
+cases is gone. What survives on the phone is the tombstone rule, mirrored in
+`AlarmSchedule.pruneTombstones`: a deleted alarm is kept for thirty days so a
+sync propagates the deletion instead of resurrecting the alarm, then dropped so
+the schedule does not grow for every alarm ever deleted.
 
-These cases are the same ones asserted in Kotlin in
-`lanalarm/app/src/test/kotlin/org/example/MergeTest.kt`. Changing one without
-the other is the bug this file exists to catch.
+These remain because the daemon still merges, and because
+`test_a_fresh_tombstone_is_kept_but_an_ancient_one_is_pruned` pins the one rule
+the two implementations still share.
 """
 
 from alarm_manager import merge_alarms, _prune_old_tombstones
