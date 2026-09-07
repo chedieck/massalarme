@@ -1,5 +1,34 @@
+# ── Python ───────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 .venv/
+venv/
 .ruff_cache/
 .pytest_cache/
+
+# ── Android ──────────────────────────────────────────────────────────
+build/
+.gradle/
+local.properties
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# ── Personal data and live config ────────────────────────────────────
+# Real weigh-ins and the live schedule. The .example files are the ones
+# meant to be read; these are one person's actual data.
+weights.db
+alarms.yaml
+alarms.json
+config.yaml
+
+# ── Scratch ──────────────────────────────────────────────────────────
+nvim.log
+.sisyphus/
+xiaomi-exploration/
+
+# ── claude-docker local state (may contain credentials) ──────────────
+.claude/
+.claude-docker/
+.claude-docker-EMERGENCY-BACKUP-*.tar.gz
