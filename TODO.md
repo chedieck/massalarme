@@ -1,97 +1,83 @@
 # TODO — publishing massalarme
 
-A short plan to get this from "works on my two machines" to a public GitHub repo
-that a stranger can install, and that plugs into ontoplano if they happen to run
-it. Roughly in order; each step is independently shippable.
+A short plan to get this from "works on my phone" to a public GitHub repo a
+stranger can install. Roughly in order; each step is independently shippable.
 
 ## 0. Scrub the repo before the first public push
 
-Nothing else on this list matters if the first push leaks personal data. All of
-these are **currently tracked**, so deleting them at HEAD is not enough — they
-stay in the history and have to be rewritten out (`git filter-repo`) or the repo
-has to be published from a fresh, squashed initial commit.
+Nothing else on this list matters if the first push leaks personal data.
 
-- [ ] `weights.db` — real weigh-ins. Remove from history; ship
-      `weights.db.example` or nothing at all and let the daemon create it.
-- [ ] `alarms.yaml` — the live config, not the `.example`. Untrack it.
-- [ ] `lanalarm/local.properties` — hardcodes an SDK path from one machine.
-      Untrack, add to `.gitignore` (Android Studio regenerates it).
-- [ ] `__pycache__/*.pyc` — tracked despite `.gitignore`. `git rm --cached`.
-- [ ] `nvim.log` and `.sisyphus/plans/overhaul.md` — scratch work. Drop, or
-      move anything worth keeping into `docs/`. (`xiaomi-exploration/` is
-      untracked already; it holds raw `btmon` captures and a MAC address, so
-      keep it that way.)
-- [ ] The two `.webm` music files under `lanalarm/` (deleted at HEAD, still in
-      history) — tens of MB of someone else's recordings. Must be rewritten out.
-- [ ] Audio licensing: `trombetas.mp3`, `bell.mp3`, `Audio/*.ogg`. Either
-      confirm they are freely redistributable and record the source in
+`weights.db`, `alarms.yaml`, `local.properties`, `nvim.log`, `.sisyphus/` and
+the tracked `.pyc` files are **untracked and ignored as of the last commit**, and
+the two `.webm` music files are deleted at HEAD. That is not enough on its own:
+they are all still in the history.
+
+- [ ] Rewrite the history (`git filter-repo`) or publish from a fresh, squashed
+      initial commit. `weights.db` is real weigh-ins and the two `.webm` files
+      are tens of MB of someone else's recordings, so neither can ship.
+- [ ] Ship `weights.db.example` or nothing at all, and let the daemon create it.
+- [ ] Audio licensing: `trombetas.mp3`, `bell.mp3`, `Audio/*.ogg`. Either confirm
+      they are freely redistributable and record the source in
       `Audio/CREDITS.md`, or replace them with a CC0 set. A repo that ships
       unclearable audio cannot be published at all.
-- [ ] Check the git history for the shared secret and any ontoplano token
-      (`git log -p -S onto_`). If one was ever committed, rotate it.
+- [ ] `git log -p -S onto_` for a leaked ontoplano token. Rotate it if one is
+      there. (`xiaomi-exploration/` is untracked and holds raw `btmon` captures
+      and a MAC address — keep it that way.)
 
 ## 1. Decide the repo shape
 
-One repo, two components, is the honest description of what this is:
+The phone is the product now and the daemon is a legacy component, so the layout
+should say so:
 
 ```
 massalarme/
-  daemon/      the Python PC peer (alarm_manager.py, sync.py, store.py, …)
-  android/     the phone app (currently lanalarm/ — rename it, the app is
-               called Massalarme everywhere else)
+  android/     the app (currently lanalarm/)
+  daemon/      the legacy Python peer, clearly labelled
   docs/
 ```
 
-- [ ] Move the loose `.py` files into `daemon/`, rename `lanalarm/` → `android/`.
+- [ ] Rename `lanalarm/` → `android/`, move the loose `.py` files into `daemon/`.
 - [ ] Rename the Android package `org.example.lanalarm` → something real
       (`com.chedieck.massalarme`). `org.example` is a placeholder namespace and
-      will read as unfinished on any store page.
-- [ ] Add `LICENSE` (MIT or AGPL — pick one) and a `.gitignore` that actually
-      covers `build/`, `.gradle/`, `local.properties`, `*.db`, `venv`.
+      reads as unfinished on any store page.
+- [ ] Add a `LICENSE` (MIT or AGPL — pick one).
+- [ ] Decide whether the daemon stays at all. It is the reference implementation
+      the Kotlin ports are tested against and it holds the weight history, which
+      is a real argument for keeping it. It is also a second implementation of
+      things the phone now does alone.
 
-## 2. Make "standalone" true, not just claimed
+## 2. Ship it
 
-The README already says the phone works with the PC off — that is the strongest
-selling point, so make it the default path rather than the fallback.
+- [ ] A signed release APK in GitHub Releases, so people can install without
+      Android Studio. Keystore in repo secrets, signed in CI.
+- [ ] A first-run flow rather than a settings screen: grant permissions, set home
+      wifi, add an alarm. Three steps, no mention of ontoplano.
+- [ ] Migration note for anyone on 2.x: the LAN pairing is gone and the app will
+      not find their PC. Their alarms and readings are untouched; the ontoplano
+      connection has to be set up on the phone.
 
-- [ ] A first-run flow that never mentions a PC: grant permissions, set a home
-      wifi, add an alarm, done. Pairing becomes an optional settings screen.
-- [ ] Ship a release APK in GitHub Releases so people can install without
-      Android Studio. `keystore` in repo secrets, signed in CI.
-- [ ] Replace the hardcoded dismissal passphrase with a user-set one — a public
-      repo publishes the current one to everybody.
-- [ ] `make install` assumes Linux + systemd + uv. Say so, or add a plain
-      `pip install -e .` path for everyone else.
+## 3. ontoplano polish
 
-## 3. Ontoplano as an optional plugin
+The phone client covers the plugin contract: derived `external_id`, duplicates
+treated as success, 422s dropped, 429 with `Retry-After`, configurable base URL,
+`whoami`, plugin manifest, stream declaration, schedule read. What is left:
 
-The client in `ontoplano.py` already covers most of `docs/PLUGINS.md`: derived
-`external_id`, duplicates treated as success, 422s dropped, 429 with
-`Retry-After`, base URL configurable, `whoami`, schedule read. What is missing:
-
-- [ ] Declare the manifest at startup — `PUT /api/v1/plugin` with `source:
-      "massalarme"` and the `metaKeys` this app reads (`hard_alarm`, `alarm`,
-      `remind_min`). Needs the `plugin:declare` scope.
-- [ ] Move the token out of the config file into the OS keychain
-      (`secret-tool` / `keyring`) as the plugin checklist asks. The file path
-      stays as a documented fallback for headless boxes.
-- [ ] Surface sync status in the phone UI: last success, pending count, last
-      error. The Settings tab shows PC link state but not ontoplano's.
-- [ ] Document the exact scopes requested (`streams:write` + `schedule:read` +
-      `plugin:declare`) and why each is needed, in the README.
+- [ ] Import the *whole* declared metaKeys set into the manifest automatically
+      rather than by hand — right now `Ontoplano.manifest()` and what
+      `ReadingUploader` actually writes are kept in step by eye.
+- [ ] Surface the pending-publish count somewhere better than a caption. A
+      weigh-in stuck in the queue for a week should be visible without going
+      looking.
 - [ ] A one-command smoke test against a local ontoplano
-      (`make ontoplano-check BASE=… TOKEN=…`) so a self-hoster can prove the
-      link before trusting it with a morning.
+      (`make ontoplano-check BASE=… TOKEN=…`) so a self-hoster can prove the link
+      before trusting it with a morning.
 
 ## 4. Make it reviewable
 
-- [ ] CI: GitHub Actions running `make test` (pytest + the Robolectric suite)
-      and `./gradlew assembleDebug`. The Android side needs a JDK 17 setup step
-      and `android-actions/setup-android`.
-- [ ] `AGENTS.md` / `CONTRIBUTING.md`: how to run the daemon against fake data,
-      how to regenerate fixtures, where the BLE decode lives.
-- [ ] README: cut the ontoplano framing from the opening paragraph. The first
-      thing a stranger reads should be "alarm you cannot dismiss without
-      weighing yourself"; ontoplano is a section further down.
-- [ ] Note the hardware this is actually tested against (Xiaomi MIBFS) and be
-      explicit that other BLE scales are untested.
+- [ ] CI: GitHub Actions running `make test` (pytest + the Robolectric suite) and
+      `./gradlew assembleDebug`. The Android side needs a JDK 17 setup step and
+      `android-actions/setup-android`.
+- [ ] `CONTRIBUTING.md`: how to run the daemon against fake data, how to
+      regenerate fixtures, where the BLE decode lives.
+- [ ] Be explicit that this is tested against one scale (Xiaomi MIBFS) and that
+      the byte offsets in `ScaleCodec` are that hardware's.

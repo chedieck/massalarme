@@ -29,6 +29,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.parse
 import uuid
 from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
@@ -426,6 +427,56 @@ def _write_secret_png(encoded: str) -> Optional[Path]:
     except Exception as exc:  # pillow missing, read-only dir, ...
         logger.debug("Could not write QR image: %s", exc)
         return None
+
+
+def _show_phone_qr() -> None:
+    """Print a QR the phone app can scan to reach ontoplano.
+
+    The app no longer pairs with this daemon, so the old pairing QR is not what
+    it wants. What it needs is the server address and a bearer token, and typing
+    a 40-character token into a phone keyboard is the kind of setup step people
+    abandon halfway.
+
+    The token is read from the same 0600 file the daemon uses. Nothing is
+    written: the QR is transient output, and a token saved to disk as an image
+    is a token in someone's photo roll.
+    """
+    cfg = load_config()
+    op_config = ontoplano.config_from_dict(cfg, CONFIG_DIR)
+
+    if not op_config.base_url:
+        logger.error("No ontoplano base_url in config.yaml.")
+        sys.exit(1)
+    if not op_config.token:
+        logger.error(
+            "No ontoplano token found. Run 'make set-token' first."
+        )
+        sys.exit(1)
+
+    encoded = (
+        "massalarme://connect"
+        f"?base={urllib.parse.quote(op_config.base_url, safe='')}"
+        f"&token={urllib.parse.quote(op_config.token, safe='')}"
+    )
+
+    try:
+        import qrcode  # type: ignore[import-untyped]
+
+        qr = qrcode.QRCode(border=4)
+        qr.add_data(encoded)
+        qr.make(fit=True)
+        qr.print_ascii(tty=sys.stdout.isatty())
+        logger.info(
+            "Scan with the Massalarme app: Settings \u2192 ontoplano \u2192 Scan QR. "
+            "It carries %s and your token.",
+            op_config.base_url,
+        )
+    except ImportError:
+        logger.warning(
+            "qrcode package not installed \u2013 cannot display QR code. "
+            "Install with: pip install qrcode[pil]"
+        )
+        print(encoded)
 
 
 def _show_secret_qr(secret: str, cfg: Optional[dict] = None) -> None:
@@ -2167,6 +2218,11 @@ def main() -> None:
         help="Display the shared secret as a QR code and exit.",
     )
     parser.add_argument(
+        "--phone-qr",
+        action="store_true",
+        help="Display a QR code the phone app can scan to connect to ontoplano.",
+    )
+    parser.add_argument(
         "--alarms",
         action="store_true",
         help="Show upcoming alarms and time until each, then exit.",
@@ -2214,6 +2270,10 @@ def main() -> None:
             logger.error("No shared secret found in config.")
             sys.exit(1)
         _show_secret_qr(secret, cfg)
+        sys.exit(0)
+
+    if args.phone_qr:
+        _show_phone_qr()
         sys.exit(0)
 
     if args.alarms:

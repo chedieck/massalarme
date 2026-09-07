@@ -123,6 +123,13 @@ class AlarmService : Service() {
     @Volatile
     private var syncsInFlight = 0
 
+    /**
+     * Teardown runs stopAlarm() and stopScaleScan(), both of which normally ask
+     * to stop the service. Asking again from inside onDestroy is at best noise.
+     */
+    @Volatile
+    private var destroyed = false
+
     private val volumeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (mediaPlayer != null) enforceMaxVolume()
@@ -241,6 +248,7 @@ class AlarmService : Service() {
      * conditions rather than assuming.
      */
     private fun stopIfIdle() {
+        if (destroyed) return
         if (mediaPlayer != null) return
         if (scaleScanner.isScanning()) return
         if (syncsInFlight > 0) return
@@ -249,6 +257,7 @@ class AlarmService : Service() {
     }
 
     override fun onDestroy() {
+        destroyed = true
         instance = null
         stopScaleScan()
         stopAlarm()

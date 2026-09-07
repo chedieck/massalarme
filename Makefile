@@ -129,6 +129,11 @@ set-token: sync
 		printf '%s' "$$TOK" | $(UV) run --python $(PYTHON) alarm_manager.py --set-token -; \
 	fi
 
+# Show a QR the phone app scans to connect to ontoplano. The token is read
+# from its 0600 file and only ever printed — never written to an image.
+phone-qr: sync
+	@$(UV) run --python $(PYTHON) alarm_manager.py --phone-qr
+
 check-ontoplano: sync
 	@$(UV) run --python $(PYTHON) alarm_manager.py --check-ontoplano
 

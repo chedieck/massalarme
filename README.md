@@ -1,26 +1,36 @@
 # Massalarme
 
-Force yourself out of bed by requiring a weigh-in on a Xiaomi BLE scale to silence
-your alarm. The Android app senses and rings on its own; a Python daemon on your
-PC keeps the schedule in sync and publishes your weight to
-[ontoplano](https://github.com/) alongside the rest of your week.
+An alarm clock you cannot switch off from bed. It only goes quiet once you have
+stood on your Xiaomi BLE scale, and it shows your weight climbing on the lock
+screen while you do it.
+
+Everything runs on the phone. There is no server to keep awake, nothing polling
+in the background, and no account required.
 
 ## How it works
 
 ```
-┌─────────┐  BLE advert   ┌──────────────┐  POST /readings  ┌────────────┐  streams API  ┌───────────┐
-│  Scale   │──────────────▶│  Android app │─────────────────▶│ PC daemon  │──────────────▶│ ontoplano │
-│  (MIBFS) │               │  (Kotlin)    │◀─────────────────│  (Python)  │◀──────────────│           │
-└─────────┘               └──────────────┘   alarm schedule  └────────────┘  planner      └───────────┘
+┌──────────┐  BLE advert   ┌──────────────┐   streams API   ┌───────────┐
+│  Scale   │──────────────▶│ Android app  │────────────────▶│ ontoplano │
+│  (MIBFS) │               │  (Kotlin)    │◀────────────────│ (optional)│
+└──────────┘               └──────────────┘  planner tasks  └───────────┘
 ```
 
-The phone owns the alarm. It holds the schedule, books exact alarms with
-`AlarmManager`, listens to the scale itself, and stores every reading locally.
-**The alarm rings whether or not the PC is on.**
+The phone holds the schedule, books exact alarms with `AlarmManager`, listens to
+the scale itself, and stores every reading locally. It wakes to ring, to read the
+scale, and to publish a weigh-in — and stops again. Nothing else runs.
 
-The PC is the home-network peer: it merges schedule edits, receives weigh-ins,
-and republishes them to ontoplano. It can also read your ontoplano planner and
-turn tasks into alarms — put "wake up" at 07:00 Tuesday and that is when it rings.
+[ontoplano](https://github.com/) is optional on both sides. Switch it on and the
+app publishes your weigh-ins to it and can read your planner back, so putting
+"wake up" at 07:00 on Tuesday is what makes the alarm ring. Leave it off and
+nothing changes about how the alarm behaves.
+
+> **The Python daemon in this repo is no longer in the path.** Earlier versions
+> needed a PC on the same LAN to keep the schedule and republish readings; the
+> phone does both itself now. The daemon is kept because it holds the historical
+> `weights.db`, is the reference implementation the Kotlin ports are tested
+> against, and can print the setup QR for the phone (`make phone-qr`). Nothing in
+> the app talks to it.
 
 ### Hard and soft alarms
 
@@ -28,26 +38,44 @@ turn tasks into alarms — put "wake up" at 07:00 Tuesday and that is when it ri
 |---|---|---|
 | Silenced by | Standing on the scale | A dismiss button |
 | Ringtone | `trombetas.mp3` | `soft.mp3` (falls back to the siren) |
-| Escape hatch | The passphrase | — |
+| Escape hatch | The passphrase, if you leave it on | — |
+| Snooze | Yes — comes back hard | Yes |
 
 A hard alarm only demands the scale **when the phone is on your home wifi** —
 that is where the scale is. Away from home it degrades to a soft alarm and tells
 you why, rather than trapping you with a siren in a hotel room. The same happens
 if the Bluetooth permission is missing.
 
-The passphrase remains the escape hatch for hard alarms:
+While it rings, the dismiss screen shows the live reading off the scale: the
+number climbing as you step on, then whether it has settled and whether the
+body-fat measurement landed. The scale broadcasts continuously; standing on one
+at 07:00 with a siren going and seeing nothing happen for four seconds is how you
+conclude the app is broken and reach for the passphrase.
+
+**Passphrase.** A hard alarm can also be silenced by typing a phrase. It defaults
+to the one this app shipped with:
 
 ```
 The Industrial Revolution and its consequences have been a disaster for the human race.
 ```
 
-Wrong input clears the field, shakes it, plays `bell.mp3`, shows **TRY AGAIN!** in red.
+Set your own under **Settings → Dismissal**, or switch it off entirely and make
+the scale the only way out. Off is a real choice with a real cost: a flat scale
+battery then means a siren you cannot stop. Wrong input clears the field, shakes
+it, plays `bell.mp3`, and shows **TRY AGAIN!** in red.
+
+**Snooze.** Off, 5, 9 or 15 minutes, under **Settings → Dismissal**. A snoozed
+alarm comes back on the same terms — a hard one is still hard — so snoozing is
+asking for a few more minutes, not talking the app out of its job. The snooze and
+the next scheduled alarm are booked separately, so snoozing at 07:00 never
+discards the 07:30 alarm.
 
 ### Where the data lives
 
-massalarme is the **source of truth** for your readings; ontoplano holds a copy
-for charting. Local data is never deleted because it was uploaded, and with sync
-switched off massalarme works exactly as it always did.
+The phone is the **source of truth** for your readings. They go into a local
+SQLite store the moment the scale reports them, and ontoplano holds a copy for
+charting elsewhere. Local data is never deleted because it was published, and
+with sync switched off the app behaves exactly as it does in flight mode.
 
 The scale rebroadcasts one measurement dozens of times, and your weight drifts as
 you settle onto it — a single trip to the scale produced up to 37 rows in the old
@@ -57,24 +85,27 @@ on your chart.
 
 ## Requirements
 
-- **PC**: Linux with Bluetooth, Python 3.10+, [uv](https://docs.astral.sh/uv/)
-- **Phone**: Android 8+ (API 26), on the same LAN as the PC
-- **Scale**: Xiaomi Mi Body Composition Scale (MIBFS) or compatible BLE scale
+- **Phone**: Android 8+ (API 26) with Bluetooth
+- **Scale**: Xiaomi Mi Body Composition Scale (MIBFS). Other BLE scales are
+  untested — the byte offsets in `ScaleCodec` are this hardware's.
+- **ontoplano**: optional
+- **PC**: only if you want to run the legacy daemon. Linux with Bluetooth,
+  Python 3.10+, [uv](https://docs.astral.sh/uv/).
 
 ## Quick start
 
 ```bash
-# Clone and install (creates venv via uv, sets up systemd service)
-make install
-
-# Show the shared secret QR code — scan it from the phone app
-make secret
-
-# View live logs
-make logs
+make apk-install     # build and install on a phone connected via adb
 ```
 
-Then build and install the Android app on your phone (see [Android setup](#android-setup)).
+Then open the app, grant permissions, set your home wifi, and add an alarm. That
+is the whole of setup. See [Android setup](#android-setup).
+
+## Legacy PC daemon
+
+Everything from here to [Android setup](#android-setup) describes the Python
+daemon, which the app no longer talks to. Skip it unless you are running it
+deliberately.
 
 ## PC setup
 
@@ -155,7 +186,8 @@ make disable        # Disable on login
 |--------|-------------|
 | `make install` | Full setup: uv venv, XDG dirs, configs, systemd service |
 | `make run` | Run daemon directly (foreground, for debugging) |
-| `make secret` | Show the pairing QR code in terminal |
+| `make phone-qr` | Show the QR the phone scans to reach ontoplano |
+| `make secret` | Legacy LAN pairing QR. The app no longer reads it. |
 | `make test` | Run the Python and Kotlin test suites |
 | `make set-token` | Store the ontoplano API token (0600 file, prompts if `TOKEN=` omitted) |
 | `make check-ontoplano` | Verify the token and show its scopes |
@@ -173,68 +205,95 @@ make disable        # Disable on login
 | `make clean` | Remove venv |
 | `make uninstall` | Remove service, XDG files, venv |
 
-### Scale BLE flags
-
-Use `make listen` to see what the scale broadcasts. The flag byte (`data[1]`)
-indicates measurement state:
-
-| Flag | Meaning |
-|------|---------|
-| `0x84` | Idle — scale broadcasting last known weight, no one on it |
-| `0x24` | Measuring — someone stepped on, weight still fluctuating |
-| `0xa4` | Weight stabilized — no impedance reading (socks are fine) |
-| `0x26` | Impedance done — full body composition measurement complete |
-
-After you step off, the scale keeps spamming `0xa4` or `0x26` for a while
-(broadcasting the result to any listening device).
-
-Pick which one stops a hard alarm in the app, under **Settings → Scale**:
-
-- **Weight** — `164` (0xa4), stops on stable weight, socks are fine
-- **Body fat** — `38` (0x26), waits for the impedance reading, needs bare feet
-
-It is a seasonal choice in practice. The PC's `syncing_weight_flag` still exists
-for `alarm_owner: pc`, and the app's setting is what matters otherwise.
-
-Note this scale emits `0x26` for the impedance case, not the `0xa6` some
-documentation claims — verified against the weight log, where every `0x26` row
-carries an impedance value and every `0xa4` row does not.
-
 ## Android setup
 
 ```bash
-# Build the debug APK
-make apk
-
-# Or build and install directly (phone must be connected via adb)
-make apk-install
+make apk           # build the debug APK
+make apk-install   # build and install (phone connected via adb)
 ```
 
 On the phone:
 
 1. Open the **Massalarme** app.
-2. Tap **Scan QR Secret** and scan the QR code from `make secret`. This pairs with
-   the PC and configures the scale in one step. If it will not scan, zoom the
-   terminal in (`Ctrl +`) or open the PNG that `make secret` also writes to
-   `~/.local/share/massalarme/pairing-qr.png`.
-3. Tap **Grant permissions**. Bluetooth scanning and location are what let the
+2. Tap **Grant permissions**. Bluetooth scanning and location are what let the
    phone hear the scale and tell whether it is on your home wifi — without them,
    hard alarms fall back to a dismiss button.
-4. Tap **Use current wifi as home** while connected to your home network.
-5. Enable **Start on boot** so the service survives reboots.
+3. Tap **Use current wifi as home** while connected to your home network.
+4. Add an alarm on the **Alarms** tab.
 
-The service runs in the background — you don't need to keep the app open. Use
-**Listen for scale** to record a weigh-in outside an alarm, or to check the scale
-is reachable at all.
+That is the app working. Everything below is optional.
+
+5. Under **Settings → Dismissal**, set your own passphrase or switch it off, and
+   pick a snooze length.
+6. Under **Settings → ontoplano**, paste a server address and token — or tap
+   **Scan QR** and scan the code from `make phone-qr` on a machine that already
+   holds a token.
+
+**Listen for scale** records a weigh-in outside an alarm, and is the way to check
+the scale is reachable at all: the reading appears under the button as it
+arrives. It stops by itself after three minutes.
+
+### Background behaviour
+
+The app runs nothing between alarms. There is no always-on service, no socket
+listening, and nothing polling. It starts when:
+
+- an alarm fires,
+- you tap **Listen for scale**,
+- a weigh-in needs publishing to ontoplano.
+
+and stops again as soon as that is done. A publish that fails with no network
+books a single `JobScheduler` job with a network constraint, which the system
+runs alongside whatever else wakes the device; it is cancelled the moment the
+queue drains. Leave **Restore alarms after a reboot** on — Android drops every
+registered alarm on both reboot and app update.
 
 ### Tabs
 
-- **Settings** — service, PC pairing, ontoplano account, scale mode, home wifi,
-  permissions. One card per concern.
+- **Settings** — next alarm, scale mode, dismissal, home wifi, ontoplano,
+  permissions, background. One card per concern.
 - **Alarms** — the schedule. Tap an alarm to edit; ontoplano-derived ones carry a
   badge and are read-only.
-- **Weight** — your weigh-in history as a chart plus a list, read from the PC
-  (which has the whole record) and falling back to this phone's own readings.
+- **Weight** — your weigh-in history as a chart plus a list, from this phone's
+  own store.
+
+### Scale BLE flags
+
+Byte 1 of the advertisement (`data[1]`) is a bitfield, not an opaque tag. Three
+bits matter:
+
+| Bit | Meaning |
+|-----|---------|
+| `0x02` | An impedance value came with this reading |
+| `0x20` | The reading has settled — the scale has stopped deciding |
+| `0x80` | The weight has been taken off the scale |
+
+Which gives the states you actually see:
+
+| Flag | Meaning |
+|------|---------|
+| `0x04` | Someone is stepping on. Weight real but still climbing — this is what the live readout shows |
+| `0xa4` | Settled, no impedance, stepped off. The scale gave up on body fat |
+| `0x26` | Settled with impedance. Full body-composition measurement complete |
+
+`make listen` prints what your scale is broadcasting, if you want to check.
+
+**Which one stops a hard alarm** is a setting, under **Settings → Scale**:
+
+- **Socks on** — `0xa4`. The scale gives up on body fat and reports the weight
+  alone, which is what happens when you step off. No impedance recorded.
+- **Bare feet** — `0x26`. The alarm keeps going until the impedance measurement
+  lands, which the scale only manages against skin. Stand there in socks and it
+  keeps ringing.
+
+Seasonal in practice. Note that what stops the alarm is *not* what gets recorded:
+every settled reading is written down whichever mode you are in. Filtering the
+recording by the stop flag is a bug this app had — a morning in socks with the
+app in bare-feet mode threw the weigh-in away entirely.
+
+This scale emits `0x26` for the impedance case, not the `0xa6` some documentation
+claims — verified against the weight log, where every `0x26` row carries an
+impedance value and every `0xa4` row does not.
 
 ### Assets
 
@@ -272,18 +331,24 @@ massalarme/
         │   ├── soft.mp3         # ← you provide this (optional)
         │   └── bell.mp3
         ├── kotlin/org/example/lanalarm/
-        │   ├── ScaleScanner.kt          # BLE scale listening (moved off the PC)
-        │   ├── ScaleCodec.kt            # Pure decode + external_id derivation
-        │   ├── ReadingStore.kt          # Local weigh-in log and upload queue
-        │   ├── ReadingUploader.kt       # Ships readings to the PC
-        │   ├── AlarmSchedule.kt         # Next-occurrence maths
-        │   ├── AlarmScheduler.kt        # AlarmManager wiring + AlarmReceiver
+        │   ├── ScaleScanner.kt          # Owns the BLE radio, nothing else
+        │   ├── ScaleSession.kt          # One trip to the scale: show / stop / record
+        │   ├── ScaleCodec.kt            # Pure decode, flag bits, external_id
+        │   ├── ReadingStore.kt          # Local weigh-in log and outbound queue
+        │   ├── ReadingUploader.kt       # Drains the queue into ontoplano
+        │   ├── Ontoplano.kt             # HTTP client: plugin, streams, schedule
+        │   ├── OntoplanoSchedule.kt     # Planner occurrences → alarms
+        │   ├── OntoplanoSync.kt         # One sync pass: declare, publish, read back
+        │   ├── SecretStore.kt           # Token, encrypted with an Android Keystore key
+        │   ├── SyncRetryJob.kt          # Network-constrained retry, no polling
+        │   ├── AlarmSchedule.kt         # Next-occurrence maths, tombstones
+        │   ├── AlarmScheduler.kt        # AlarmManager wiring, snooze, AlarmReceiver
         │   ├── HomeNetwork.kt           # "Am I at home?" gate for hard alarms
-        │   ├── AppSettings.kt           # Prefs + QR provisioning
-        │   ├── AlarmService.kt          # Foreground service, ringing, WS client
-        │   ├── AlarmDismissActivity.kt  # Full-screen dismissal (hard/soft)
-        │   ├── BootReceiver.kt          # Auto-start on boot
-        │   ├── MainActivity.kt          # Settings UI
+        │   ├── AppSettings.kt           # Every persisted setting
+        │   ├── AlarmService.kt          # Rings, scans, syncs, then stops itself
+        │   ├── AlarmDismissActivity.kt  # Full-screen dismissal, live weight, snooze
+        │   ├── BootReceiver.kt          # Rebooks alarms after boot or update
+        │   ├── MainActivity.kt          # The whole UI
         │   └── App.kt                   # Notification channels
         ├── res/layout/
         └── AndroidManifest.xml
@@ -294,59 +359,90 @@ massalarme/
 ```bash
 make test          # both suites
 make test-py       # pytest: store, sync, ingest endpoint, schedule mapping
-make test-apk      # Kotlin: identity parity with Python, decode, alarm maths
+make test-apk      # Kotlin: scale rules, ontoplano client, alarm flows, snooze
 ```
 
-The Python and Kotlin suites both assert the *same* `external_id` values. If the
-two implementations ever drift, the tests fail rather than your weight chart
-quietly growing duplicates.
+Two things are pinned across the two languages, because a silent disagreement
+between them corrupts data rather than crashing:
+
+- **`external_id`** — derived from the reading itself, computed independently in
+  `ScaleCodec` and `store.make_external_id`. Drift means one weigh-in becomes two
+  points on your chart.
+- **Planner mapping** — `OntoplanoScheduleTest` mirrors `tests/test_schedule_sync.py`
+  case for case. Drift means the same task becomes a different alarm.
+
+The Kotlin suite runs on the JVM under Robolectric: it drives the real Activity,
+the real dialogs, the real `AlarmManager`, and a real local HTTP server for the
+ontoplano client. That layer is where every bug that reached a user actually
+lived; the schedule maths underneath was unit-tested from the start and was never
+the thing that was wrong.
 
 ## ontoplano
 
-massalarme publishes weigh-ins to ontoplano and can read your planner back to set
-alarms. Both are off by default; massalarme is fully standalone without them.
+Optional. Switch it on and the app publishes weigh-ins and can read your planner
+back to set alarms; leave it off and nothing about the alarm changes.
+
+**On the phone**, under **Settings → ontoplano**: paste the server address and a
+token, then **Save + test**. The test calls `/api/v1/me`, which needs no scope, so
+it tells you whether the token works and whose account it is — the useful answer,
+rather than "saved".
+
+To avoid typing a token on a phone keyboard, generate the QR on a machine that
+already holds one:
 
 ```bash
-make set-token                 # paste the token from /settings/integrations
-make check-ontoplano           # confirm it works and see its scopes
-make backfill && make sync-now # push your existing history
+make set-token     # paste the token from /settings/integrations
+make phone-qr      # scan this from Settings → ontoplano → Scan QR
 ```
 
-Then in `~/.config/massalarme/config.yaml`:
+The QR carries the base URL and the token and is printed, never written to an
+image — a token saved as a PNG is a token in someone's photo roll.
 
-```yaml
-ontoplano:
-  enabled: true
-  base_url: "http://192.168.1.10:1493"   # or https://app.ontoplano.…
-  schedule:
-    enabled: true
-    rules:
-      - match: {title: "(?i)wake up"}
-        kind: hard
-      - match: {category: duty}
-        kind: soft
-```
+**Scopes**, and why each is needed:
 
-Scopes: `streams:write` to push readings, `schedule:read` for planner-driven
-alarms. `streams:read` is deliberately **not** needed — massalarme owns its
-readings and never reads them back.
+| Scope | For |
+|-------|-----|
+| `streams:write` | Publishing weigh-ins. The whole point. |
+| `schedule:read` | Reading planner occurrences, so a task can ring. |
+| `plugin:declare` | Registering the manifest at `PUT /api/v1/plugin`. |
 
-ontoplano reports *what is scheduled* and knows nothing about alarms, scales or
-ringtones. Which occurrences become alarms, and whether they are hard or soft, is
-decided by the rules above. First match wins; anything unmatched gets no alarm.
-Derived alarms carry `origin: ontoplano` and update in place on each sync — your
-hand-made alarms are never touched.
+`streams:read` is deliberately **not** requested: the phone owns its readings and
+never needs them back.
+
+**Which tasks become alarms** is decided on the phone, not in ontoplano — it
+reports what is scheduled and knows nothing about alarms, scales or ringtones.
+Set a title pattern and a kind under **Settings → ontoplano**; an empty pattern
+means nothing becomes an alarm. Matching is case-insensitive without needing
+`(?i)`.
+
+Derived alarms carry `origin: ontoplano`, are read-only in the app, and update in
+place on each sync, so your hand-made alarms are never touched. An activity
+repeated across several days collapses into one weekly alarm rather than becoming
+three unrelated single-day ones. They default to **soft** and can be snoozed like
+anything else.
+
+Publishing is retry-safe by construction: `external_id` is derived from the
+reading, so a resend comes back as a duplicate rather than a second point. A `403`
+or `422` is treated as permanent so the queue cannot wedge; a `429` or `5xx` holds
+the reading, because a server having a bad minute is not a reason to lose a
+weigh-in.
 
 ## Security
 
-The PC and phone share a 64-character hex secret generated on first run. All HTTP
-requests include `?key=<secret>`. The phone rejects requests without a valid key
-(403). The secret is exchanged via QR code — it never leaves the LAN.
+There is no LAN protocol left, so there is no shared secret and nothing listening
+on a port. The app makes exactly one kind of outbound request: to the ontoplano
+address you typed in.
 
-The QR code now also carries the PC's LAN address and the scale parameters, since
-the phone has to work without the PC prompting it first. Scanning it is the whole
-of setup.
+The ontoplano token is encrypted with a key held in the **Android Keystore** —
+hardware-backed on most phones — and stored in the app's private preferences. The
+key is deliberately not bound to device unlock: a weigh-in has to be publishable
+while the phone is locked on a bedside table, which is exactly when it cannot be
+unlocked. If a device's keystore refuses the key, the token is stored as-is and
+**the settings screen says so** rather than implying a protection that is not
+there.
 
-The ontoplano API token is a **separate** credential from the QR secret. It lives
-in `~/.config/massalarme/ontoplano_token` with mode `0600` — never in
-`config.yaml`, never in the repo, never logged.
+The token is never rendered back into the settings field, never logged, and never
+written to an image.
+
+On the legacy daemon, the token lives in `~/.config/massalarme/ontoplano_token`
+with mode `0600` — never in `config.yaml`, never in the repo.
