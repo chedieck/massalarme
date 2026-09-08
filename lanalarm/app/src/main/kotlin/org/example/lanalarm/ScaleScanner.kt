@@ -142,7 +142,7 @@ class ScaleScanner(private val context: Context) {
 
         this.listener = listener
         session = ScaleSession(
-            stopFlag = AppSettings.stableFlag(context),
+            requireBodyFat = AppSettings.requiresBodyFat(context),
             minWeightKg = AppSettings.minWeightKg(context).toDouble(),
             listener = listener
         )

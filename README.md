@@ -278,32 +278,38 @@ bits matter:
 | `0x20` | The reading has settled — the scale has stopped deciding |
 | `0x80` | The weight has been taken off the scale |
 
-Which gives the states you actually see:
+Which gives five states, not two:
 
 | Flag | Meaning |
 |------|---------|
-| `0x04` | Someone is stepping on. Weight real but still climbing — this is what the live readout shows |
-| `0xa4` | Settled, no impedance, stepped off. The scale gave up on body fat |
-| `0x26` | Settled with impedance. Full body-composition measurement complete |
+| `0x04` | Stepping on. Weight real but still climbing — this is what the live readout shows |
+| `0x24` | Settled, still stood on it |
+| `0xa4` | Settled, stepped off. The scale gave up on body fat |
+| `0x26` | Settled with impedance, still stood on it |
+| `0xa6` | Settled with impedance, stepped off |
 
 `make listen` prints what your scale is broadcasting, if you want to check.
 
 **Which one stops a hard alarm** is a setting, under **Settings → Scale**:
 
-- **Socks on** — `0xa4`. The scale gives up on body fat and reports the weight
-  alone, which is what happens when you step off. No impedance recorded.
-- **Bare feet** — `0x26`. The alarm keeps going until the impedance measurement
-  lands, which the scale only manages against skin. Stand there in socks and it
-  keeps ringing.
+- **Socks on** — stop as soon as the weight settles. No impedance recorded.
+- **Bare feet** — hold out for the impedance measurement, which the scale only
+  manages against skin. Stand there in socks and it keeps ringing.
+
+Both conditions are tested against the *bits*, not against a whole flag byte.
+That matters: `0xa4` has the stepped-off bit set, so an equality test against it
+left a hard alarm ringing while you stood on the scale, and only stopped once you
+gave up and got off.
 
 Seasonal in practice. Note that what stops the alarm is *not* what gets recorded:
 every settled reading is written down whichever mode you are in. Filtering the
 recording by the stop flag is a bug this app had — a morning in socks with the
 app in bare-feet mode threw the weigh-in away entirely.
 
-This scale emits `0x26` for the impedance case, not the `0xa6` some documentation
-claims — verified against the weight log, where every `0x26` row carries an
-impedance value and every `0xa4` row does not.
+The weight log only ever contains `0xa4` and `0x26` rows, because those were the
+only two the old PC daemon accepted — which is how the stepped-off bit went
+unnoticed for so long. The `btmon` captures in `xiaomi-exploration/` (taken
+mid-*subida*, mid-ascent) are where `0x04` comes from.
 
 ### Assets
 

@@ -55,6 +55,26 @@ object ScaleCodec {
          * out loud — fine to display, wrong to record as a weigh-in.
          */
         val isFinal: Boolean get() = isStabilized
+
+        /**
+         * Is this the reading the user is waiting for — the one that stops a
+         * hard alarm?
+         *
+         * Asked of the *bits*, deliberately, rather than by comparing the whole
+         * flag byte to a stored constant. Those are three independent bits, so
+         * an equality test demands one exact combination of all three, and the
+         * combination it demanded (`0xa4`) has the weight-removed bit set. That
+         * meant standing on the scale broadcast `0x24` — settled, still stood on
+         * it — which did not match, and the alarm kept going until the user gave
+         * up and stepped off. Which is the one thing a person standing on a
+         * scale in front of a siren will not think to try.
+         *
+         * @param requireBodyFat the bare-feet setting: hold out for the
+         *   impedance measurement (`0x26`, or `0xa6` once they step off) rather
+         *   than accepting a settled weight alone.
+         */
+        fun satisfiesAlarm(requireBodyFat: Boolean): Boolean =
+            isStabilized && (!requireBodyFat || hasImpedance)
     }
 
     private fun utcFormatter(): SimpleDateFormat =

@@ -48,26 +48,25 @@ object AppSettings {
     const val KEY_LAST_WEIGHT_AT = "last_weight_at"
 
     /**
-     * Which scale advertisement satisfies a hard alarm.
+     * Which of the two stop conditions a hard alarm uses.
      *
-     * Byte 1 of the Xiaomi advertisement is a bitfield. Bit 5 means the reading
-     * settled, bit 1 means an impedance value came with it, and bit 7 means the
-     * weight has been taken off the scale. That gives the two states this
-     * hardware actually finishes in, confirmed against the weight log:
+     * These are stored values, not a byte to compare an advertisement against.
+     * Byte 1 of the Xiaomi advertisement is a bitfield — bit 5 "settled", bit 1
+     * "impedance came with it", bit 7 "the weight has been taken off" — so the
+     * scale emits four finished states, not two:
      *
-     *  - `0x26` — settled *with* impedance. The body-fat measurement worked,
-     *    which needs bare feet.
-     *  - `0xa4` — settled, no impedance, weight removed. The scale gave up on
-     *    body fat and reported the weight alone. This is what socks produce.
+     *  - `0x24` settled, still stood on it
+     *  - `0xa4` settled, stepped off
+     *  - `0x26` settled with impedance, still stood on it
+     *  - `0xa6` settled with impedance, stepped off
      *
-     * (Some documentation claims `0xa6` for the body-fat case; this hardware
-     * does not use it.)
+     * Testing a reading by equality against one of these demands an exact
+     * combination of all three bits, and `0xa4` includes "stepped off" — which
+     * is why standing on the scale used to leave a hard alarm ringing. The test
+     * belongs on the bits: see [ScaleCodec.ScaleReading.satisfiesAlarm].
      */
     const val FLAG_WEIGHT_ONLY = 0xa4
     const val FLAG_BODY_FAT = 0x26
-
-    /** Bit 5 of byte 1: the reading has settled and is worth recording. */
-    const val BIT_STABILIZED = 0x20
 
     const val DEFAULT_STABLE_FLAG = FLAG_WEIGHT_ONLY
     const val DEFAULT_MIN_WEIGHT_KG = 30f

@@ -18,7 +18,7 @@ package org.example.lanalarm
  *     app set to body-fat mode threw the weigh-in away entirely.
  */
 class ScaleSession(
-    private val stopFlag: Int,
+    private val requireBodyFat: Boolean,
     private val minWeightKg: Double,
     private val listener: ScaleScanner.ScaleListener
 ) {
@@ -51,7 +51,7 @@ class ScaleSession(
             readings.add(reading)
         }
 
-        if (!announced && reading.flag == stopFlag) {
+        if (!announced && reading.satisfiesAlarm(requireBodyFat)) {
             announced = true
             listener.onStableWeight(reading)
         }

@@ -117,8 +117,24 @@ class ScaleSessionTest {
         }
     }
 
-    private fun session(stopFlag: Int = AppSettings.FLAG_WEIGHT_ONLY) =
-        ScaleSession(stopFlag = stopFlag, minWeightKg = 30.0, listener = listener)
+    private fun session(requireBodyFat: Boolean = false) =
+        ScaleSession(
+            requireBodyFat = requireBodyFat,
+            minWeightKg = 30.0,
+            listener = listener
+        )
+
+    /**
+     * The four states this scale finishes in. Bit 5 is "settled", bit 1 is
+     * "impedance came with it", bit 7 is "the weight has been taken off".
+     */
+    private object Flag {
+        const val CLIMBING = 0x04        // stepping on, still moving
+        const val SETTLED_ON = 0x24      // settled, still stood on it
+        const val SETTLED_OFF = 0xa4     // settled, stepped off, no body fat
+        const val BODY_FAT_ON = 0x26     // settled with impedance, still stood on it
+        const val BODY_FAT_OFF = 0xa6    // settled with impedance, stepped off
+    }
 
     /** A reading with a chosen flag and weight, distinct by its raw value. */
     private fun reading(
@@ -137,9 +153,9 @@ class ScaleSessionTest {
     @Test
     fun `every readable advertisement is shown, settled or not`() {
         val session = session()
-        session.offer(reading(0x04, 40.0))
-        session.offer(reading(0x04, 68.5))
-        session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 73.8))
+        session.offer(reading(Flag.CLIMBING, 40.0))
+        session.offer(reading(Flag.CLIMBING, 68.5))
+        session.offer(reading(Flag.SETTLED_OFF, 73.8))
 
         assertEquals(
             "the number has to climb on screen while the user steps on",
@@ -152,7 +168,7 @@ class ScaleSessionTest {
         val session = session()
         assertFalse(
             "the quiet timer must not be armed by the scale merely noticing a foot",
-            session.offer(reading(0x04, 68.5))
+            session.offer(reading(Flag.CLIMBING, 68.5))
         )
         assertFalse(session.isOpen())
     }
@@ -160,16 +176,31 @@ class ScaleSessionTest {
     @Test
     fun `a reading below the floor is ignored entirely`() {
         val session = session()
-        assertFalse(session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 4.2)))
+        assertFalse(session.offer(reading(Flag.SETTLED_OFF, 4.2)))
         assertTrue("a cat is not a weigh-in, and not worth showing either", live.isEmpty())
     }
 
     @Test
-    fun `the alarm stops on the first reading matching the stop flag`() {
-        val session = session(stopFlag = AppSettings.FLAG_WEIGHT_ONLY)
-        session.offer(reading(0x04, 70.0))
-        session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 73.8))
-        session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 73.9))
+    fun `standing on the scale stops the alarm without stepping off`() {
+        // The bug this pins. The stop condition was an equality test against
+        // 0xa4, and 0xa4 has the weight-removed bit set — so the alarm only ever
+        // stopped once the user gave up and got off, which is the one thing a
+        // person standing in front of a siren will not think to try. Standing
+        // still broadcasts 0x24: settled, still stood on it.
+        val session = session(requireBodyFat = false)
+        session.offer(reading(Flag.CLIMBING, 41.0))
+        session.offer(reading(Flag.CLIMBING, 70.0))
+        session.offer(reading(Flag.SETTLED_ON, 73.8))
+
+        assertEquals(listOf(73.8), stopped)
+    }
+
+    @Test
+    fun `the alarm stops on the first settled reading, not every one`() {
+        val session = session(requireBodyFat = false)
+        session.offer(reading(Flag.SETTLED_ON, 73.8))
+        session.offer(reading(Flag.SETTLED_ON, 73.9))
+        session.offer(reading(Flag.SETTLED_OFF, 73.9))
 
         assertEquals(
             "nobody should stand on a scale waiting for the session to settle",
@@ -178,9 +209,27 @@ class ScaleSessionTest {
     }
 
     @Test
-    fun `in body-fat mode a weight-only reading does not stop the alarm`() {
-        val session = session(stopFlag = AppSettings.FLAG_BODY_FAT)
-        session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 73.8))
+    fun `a climbing reading never stops the alarm`() {
+        // It carries a real weight and is worth showing, but the scale has not
+        // decided yet. Stopping here would let someone tap the scale with a foot.
+        session(requireBodyFat = false).offer(reading(Flag.CLIMBING, 73.8))
+        assertTrue(stopped.isEmpty())
+    }
+
+    @Test
+    fun `stepping off still stops the alarm`() {
+        // The old behaviour has to keep working: someone who steps on and
+        // straight off again is still done.
+        val session = session(requireBodyFat = false)
+        session.offer(reading(Flag.SETTLED_OFF, 73.8))
+        assertEquals(listOf(73.8), stopped)
+    }
+
+    @Test
+    fun `in bare-feet mode a settled weight alone does not stop the alarm`() {
+        val session = session(requireBodyFat = true)
+        session.offer(reading(Flag.SETTLED_ON, 73.8))
+        session.offer(reading(Flag.SETTLED_OFF, 73.8))
 
         assertTrue(
             "the point of bare-feet mode is that socks do not get you out of it",
@@ -189,16 +238,24 @@ class ScaleSessionTest {
     }
 
     @Test
-    fun `in body-fat mode a weight-only reading is still recorded`() {
-        // The regression this pins: filtering the session by the stop flag meant
-        // a morning in socks with the app in body-fat mode threw the weigh-in
-        // away entirely. What stops the alarm is a setting; what gets written
-        // down is not.
-        val session = session(stopFlag = AppSettings.FLAG_BODY_FAT)
-        session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 73.8))
-        session.commit()
+    fun `in bare-feet mode the impedance reading stops it, standing or stepped off`() {
+        val standing = session(requireBodyFat = true)
+        standing.offer(reading(Flag.BODY_FAT_ON, 73.8, impedance = 512.0))
+        assertEquals(listOf(73.8), stopped)
 
-        assertEquals(73.8, completed!!.first.weightKg, 0.001)
+        stopped.clear()
+        // Some units only report impedance once the weight comes off. Demanding
+        // exactly 0x26 would leave those ringing forever.
+        val steppedOff = session(requireBodyFat = true)
+        steppedOff.offer(reading(Flag.BODY_FAT_OFF, 74.0, impedance = 512.0))
+        assertEquals(listOf(74.0), stopped)
+    }
+
+    @Test
+    fun `in socks mode an impedance reading is more than enough`() {
+        val session = session(requireBodyFat = false)
+        session.offer(reading(Flag.BODY_FAT_ON, 73.8, impedance = 512.0))
+        assertEquals(listOf(73.8), stopped)
     }
 
     @Test
@@ -206,9 +263,9 @@ class ScaleSessionTest {
         // Stepping off produces a final weight-only advertisement. Taking the
         // last reading blindly would discard the body-fat measurement the user
         // stood still for.
-        val session = session(stopFlag = AppSettings.FLAG_BODY_FAT)
-        session.offer(reading(AppSettings.FLAG_BODY_FAT, 73.8, impedance = 512.0))
-        session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 73.8))
+        val session = session(requireBodyFat = true)
+        session.offer(reading(Flag.BODY_FAT_ON, 73.8, impedance = 512.0))
+        session.offer(reading(Flag.SETTLED_OFF, 73.8))
         session.commit()
 
         assertEquals(512.0, completed!!.first.impedance!!, 0.001)
@@ -217,8 +274,8 @@ class ScaleSessionTest {
     @Test
     fun `without impedance the last settled reading is the canonical one`() {
         val session = session()
-        session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 73.6))
-        session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 73.8))
+        session.offer(reading(Flag.SETTLED_OFF, 73.6))
+        session.offer(reading(Flag.SETTLED_OFF, 73.8))
         session.commit()
 
         assertEquals("the scale is still settling until the last payload",
@@ -228,8 +285,8 @@ class ScaleSessionTest {
     @Test
     fun `a rebroadcast payload is one measurement, not two`() {
         val session = session()
-        session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 73.8, raw = "same"))
-        session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 73.8, raw = "same"))
+        session.offer(reading(Flag.SETTLED_OFF, 73.8, raw = "same"))
+        session.offer(reading(Flag.SETTLED_OFF, 73.8, raw = "same"))
         session.commit()
 
         assertEquals(1, completed!!.second)
@@ -244,7 +301,7 @@ class ScaleSessionTest {
     @Test
     fun `a committed session is closed and ready for the next trip`() {
         val session = session()
-        session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 73.8))
+        session.offer(reading(Flag.SETTLED_OFF, 73.8))
         assertTrue(session.isOpen())
 
         session.commit()
@@ -252,7 +309,7 @@ class ScaleSessionTest {
 
         // And the alarm can be stopped again by the next trip, rather than the
         // announcement flag staying latched forever.
-        session.offer(reading(AppSettings.FLAG_WEIGHT_ONLY, 74.0))
+        session.offer(reading(Flag.SETTLED_OFF, 74.0))
         assertEquals(listOf(73.8, 74.0), stopped)
     }
 }

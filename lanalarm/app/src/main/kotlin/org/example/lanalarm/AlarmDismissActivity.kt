@@ -191,7 +191,7 @@ class AlarmDismissActivity : AppCompatActivity() {
             !stabilized -> "Hold still…"
             hasImpedance -> "Body fat measured"
             wantsBodyFat -> "Weight settled — waiting for body fat, keep your feet bare"
-            else -> "Weight settled — step off to finish"
+            else -> "Weight settled"
         }
     }
 
