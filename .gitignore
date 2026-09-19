@@ -23,10 +23,21 @@ alarms.yaml
 alarms.json
 config.yaml
 
-# ── Scratch ──────────────────────────────────────────────────────────
+# ── Raw Bluetooth captures ───────────────────────────────────────────
+# `make listen` and btmon output carry the MAC address of every device
+# within range, and the payloads themselves are weigh-ins. CONTRIBUTING.md
+# asks people to take these; nobody should be able to commit one by accident.
+btmon-*
+*.btmon
+capture-*
+xiaomi-exploration/
+
+# ── Editors and scratch ──────────────────────────────────────────────
 nvim.log
 .sisyphus/
-xiaomi-exploration/
+.idea/
+*.iml
+.DS_Store
 
 # ── claude-docker local state (may contain credentials) ──────────────
 .claude/
