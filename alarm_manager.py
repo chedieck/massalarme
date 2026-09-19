@@ -112,6 +112,9 @@ def _setup_logging() -> None:
 # Default configuration values
 # ---------------------------------------------------------------------------
 _DEFAULT_CONFIG = {
+    # No sensible default: this is one particular handset on one particular
+    # LAN. Empty means "do not go looking", which is right for everyone who
+    # runs the phone-owned setup.
     "phone_mac": "",
     "lan_network": "192.168.1.0/24",
     "port": 8080,
@@ -119,7 +122,10 @@ _DEFAULT_CONFIG = {
     "scale_name": "MIBFS",
     "scale_uuid_prefix": "0000181b",
     "syncing_weight_flag": 0x26,
-    "min_weight_kg": 68,
+    # A floor to reject the cat, a suitcase, and the scale talking to itself
+    # -- not a guess at anybody's weight. Raise it if something in the house
+    # keeps registering as a weigh-in.
+    "min_weight_kg": 30,
     "shared_secret": "",
     "phone_scan_interval": 10,
     "retry_fast_interval": 10,
@@ -364,7 +370,7 @@ def build_provisioning_payload(cfg: dict) -> dict:
             "name": cfg.get("scale_name", "MIBFS"),
             "uuid_prefix": cfg.get("scale_uuid_prefix", "0000181b"),
             "stable_flag": int(cfg.get("syncing_weight_flag", 0xA4)),
-            "min_weight_kg": float(cfg.get("min_weight_kg", 68)),
+            "min_weight_kg": float(cfg.get("min_weight_kg", 30)),
             "session_gap_seconds": int(cfg.get("weigh_in_gap_seconds", 90)),
         },
     }
@@ -390,7 +396,7 @@ def encode_provisioning(payload: dict) -> str:
     """
     scale = payload["scale"]
     min_weight = scale["min_weight_kg"]
-    # Keep it integral when it can be; "68" beats "68.0" and both are legal
+    # Keep it integral when it can be; "30" beats "30.0" and both are legal
     # alphanumeric characters.
     min_weight_text = (
         str(int(min_weight)) if float(min_weight).is_integer() else f"{min_weight:.1f}"
@@ -1039,10 +1045,19 @@ def collapse_raw_log(cfg: Optional[dict] = None) -> int:
 # =====================================================================
 
 
-async def discover_phone_ip(cfg: dict) -> str:
-    """Scan ARP table until phone is found. Blocks with retries."""
+async def discover_phone_ip(cfg: dict) -> Optional[str]:
+    """Scan ARP table until phone is found. Blocks with retries.
+
+    Returns ``None`` when no ``phone_mac`` is configured. An empty MAC is a
+    substring of every line of ``ip neigh``, so scanning with one would report
+    the first neighbour on the LAN as the phone.
+    """
     phone_mac = cfg["phone_mac"]
     lan_network = cfg["lan_network"]
+    if not phone_mac:
+        logger.info("No phone_mac configured -- skipping LAN discovery.")
+        return None
+
     phone_ip: Optional[str] = None
 
     while not phone_ip:
@@ -1077,6 +1092,10 @@ async def discover_phone_ip_until(cfg: dict, deadline: datetime) -> Optional[str
     phone_mac = cfg["phone_mac"]
     lan_network = cfg["lan_network"]
     interval = cfg.get("phone_scan_interval", 10)
+
+    if not phone_mac:
+        logger.info("No phone_mac configured -- skipping LAN discovery.")
+        return None
 
     while True:
         try:

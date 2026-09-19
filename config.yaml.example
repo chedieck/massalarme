@@ -1,7 +1,9 @@
 # Massalarme – Scale Alarm Manager
 # Example configuration. Copy to ~/.config/massalarme/config.yaml
 
-# Phone Bluetooth MAC address (used for LAN discovery via ARP)
+# Phone MAC address, used to find the phone on the LAN via the ARP table.
+# Only needed for the legacy "pc" alarm_owner below. Leave it empty and the
+# daemon does not go looking.
 phone_mac: ""
 
 # Local network CIDR (for ARP scanning)
@@ -30,8 +32,9 @@ scale_uuid_prefix: "0000181b"
 # Settings screen.
 syncing_weight_flag: 0xa4
 
-# Minimum weight (kg) to accept as a valid reading
-min_weight_kg: 68
+# Minimum weight (kg) to accept as a valid reading. A floor to reject the cat,
+# a suitcase, and the scale talking to itself.
+min_weight_kg: 30
 
 # Alarm trigger retry: first 3 attempts at this interval (seconds)
 retry_fast_interval: 10
