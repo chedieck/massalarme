@@ -58,7 +58,7 @@ conclude the app is broken and reach for the passphrase.
 to the one this app shipped with:
 
 ```
-The Industrial Revolution and its consequences have been a disaster for the human race.
+Act as if what you do makes a difference: it does.
 ```
 
 Set your own under **Settings → Dismissal**, or switch it off entirely and make

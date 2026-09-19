@@ -83,7 +83,7 @@ object AppSettings {
      * to inconvenience. It is a default now, not a rule.
      */
     const val DEFAULT_PASSPHRASE =
-        "The Industrial Revolution and its consequences have been a disaster for the human race."
+        "Act as if what you do makes a difference: it does."
 
     const val DEFAULT_SNOOZE_MINUTES = 9
 
