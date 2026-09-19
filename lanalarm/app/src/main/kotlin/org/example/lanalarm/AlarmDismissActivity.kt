@@ -236,7 +236,7 @@ class AlarmDismissActivity : AppCompatActivity() {
     private fun playBell() {
         bellPlayer?.release()
         try {
-            val afd = assets.openFd("bell.mp3")
+            val afd = assets.openFd("custom-bell.mp3")
             bellPlayer = MediaPlayer().apply {
                 setAudioAttributes(
                     AudioAttributes.Builder()
@@ -251,7 +251,8 @@ class AlarmDismissActivity : AppCompatActivity() {
             }
             afd.close()
         } catch (_: Exception) {
-            // bell.mp3 not provided.
+            // No custom-bell.mp3 in assets. It is optional decoration on a
+            // wrong passphrase; the red TRY AGAIN! already says everything.
         }
     }
 

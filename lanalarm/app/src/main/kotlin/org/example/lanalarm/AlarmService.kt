@@ -13,10 +13,13 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
 
@@ -64,9 +67,18 @@ class AlarmService : Service() {
         const val ACTION_STOP_LISTENING = "org.example.lanalarm.STOP_LISTENING"
         const val ACTION_SYNC = "org.example.lanalarm.SYNC"
 
-        /** Hard alarms use the siren; soft ones should not wake the neighbours. */
-        private const val ASSET_HARD_ALARM = "trombetas.mp3"
-        private const val ASSET_SOFT_ALARM = "soft.mp3"
+        /**
+         * Optional ringtones, supplied by whoever builds the app.
+         *
+         * The repo ships no audio at all. A public repo carrying sound files
+         * whose licence nobody can name is the one thing that gets it taken
+         * down, and a siren is a matter of taste anyway. Drop an mp3 at either
+         * of these names into the assets directory before building and it is
+         * used; leave them out and the phone's own alarm sound rings instead.
+         * Nobody has to know this feature exists for the alarm to work.
+         */
+        private const val ASSET_HARD_ALARM = "custom-alarm.mp3"
+        private const val ASSET_SOFT_ALARM = "custom-alarm-soft.mp3"
 
         /**
          * Give up scanning eventually, so the radio is never left running.
@@ -515,19 +527,28 @@ class AlarmService : Service() {
                 .build()
             am.requestAudioFocus(audioFocusRequest!!)
 
-            // Fall back to the siren if the softer tone was never added, rather
-            // than silently failing to ring at all.
-            val resolvedAsset = if (assetExists(assetName)) assetName else ASSET_HARD_ALARM
-            val afd = assets.openFd(resolvedAsset)
+            // No custom audio is the normal case, not an error. Try the tone
+            // asked for, then the hard tone, then the phone's own alarm sound.
+            // Never silence: an alarm that fails to ring has failed entirely.
+            val resolvedAsset = when {
+                assetExists(assetName) -> assetName
+                assetExists(ASSET_HARD_ALARM) -> ASSET_HARD_ALARM
+                else -> null
+            }
             mediaPlayer = MediaPlayer().apply {
                 setAudioAttributes(attrs)
-                setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+                if (resolvedAsset != null) {
+                    val afd = assets.openFd(resolvedAsset)
+                    setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+                    afd.close()
+                } else {
+                    setDataSource(this@AlarmService, defaultAlarmUri())
+                }
                 isLooping = true
                 prepare()
                 start()
             }
-            afd.close()
-            Log.i(TAG, "MediaPlayer created and playing $resolvedAsset")
+            Log.i(TAG, "MediaPlayer created and playing ${resolvedAsset ?: "the system alarm sound"}")
 
             startVolumeGuard()
             val filter = IntentFilter("android.media.VOLUME_CHANGED_ACTION")
@@ -547,6 +568,18 @@ class AlarmService : Service() {
 
     private fun assetExists(name: String): Boolean =
         runCatching { assets.openFd(name).close() }.isSuccess
+
+    /**
+     * The phone's own alarm sound.
+     *
+     * The alarm slot can be unset on a stripped-down ROM, so fall through to the
+     * ringtone and then to the platform's built-in default rather than handing
+     * MediaPlayer a null and ringing nothing.
+     */
+    private fun defaultAlarmUri(): Uri =
+        RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            ?: Settings.System.DEFAULT_ALARM_ALERT_URI
 
     private fun launchDismissActivity() {
         val intent = Intent(this, AlarmDismissActivity::class.java).apply {
