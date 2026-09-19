@@ -1,5 +1,7 @@
 # Massalarme
 
+[![Licence: AGPL v3](https://img.shields.io/badge/licence-AGPL--3.0-blue.svg)](LICENSE)
+
 An alarm clock you cannot switch off from bed. It only goes quiet once you have
 stood on your Xiaomi BLE scale, and it shows your weight climbing on the lock
 screen while you do it.
@@ -27,17 +29,17 @@ nothing changes about how the alarm behaves.
 
 > **The Python daemon in this repo is no longer in the path.** Earlier versions
 > needed a PC on the same LAN to keep the schedule and republish readings; the
-> phone does both itself now. The daemon is kept because it holds the historical
-> `weights.db`, is the reference implementation the Kotlin ports are tested
-> against, and can print the setup QR for the phone (`make phone-qr`). Nothing in
-> the app talks to it.
+> phone does both itself now. The daemon is kept because it is the reference
+> implementation the Kotlin ports are tested against, it can migrate an old
+> `weights.db` into ontoplano, and it can print the setup QR for the phone
+> (`make phone-qr`). Nothing in the app talks to it.
 
 ### Hard and soft alarms
 
 | | Hard | Soft |
 |---|---|---|
 | Silenced by | Standing on the scale | A dismiss button |
-| Ringtone | `trombetas.mp3` | `soft.mp3` (falls back to the siren) |
+| Ringtone | The system alarm sound, or your own `custom-alarm.mp3` | Your own `custom-alarm-soft.mp3`, else the same |
 | Escape hatch | The passphrase, if you leave it on | — |
 | Snooze | Yes — comes back hard | Yes |
 
@@ -62,7 +64,7 @@ The Industrial Revolution and its consequences have been a disaster for the huma
 Set your own under **Settings → Dismissal**, or switch it off entirely and make
 the scale the only way out. Off is a real choice with a real cost: a flat scale
 battery then means a siren you cannot stop. Wrong input clears the field, shakes
-it, plays `bell.mp3`, and shows **TRY AGAIN!** in red.
+it, and shows **TRY AGAIN!** in red.
 
 **Snooze.** Off, 5, 9 or 15 minutes, under **Settings → Dismissal**. A snoozed
 alarm comes back on the same terms — a hard one is still hard — so snoozing is
@@ -87,7 +89,8 @@ on your chart.
 
 - **Phone**: Android 8+ (API 26) with Bluetooth
 - **Scale**: Xiaomi Mi Body Composition Scale (MIBFS). Other BLE scales are
-  untested — the byte offsets in `ScaleCodec` are this hardware's.
+  untested — the byte offsets in `ScaleCodec` are this hardware's. If you own a
+  different one, [CONTRIBUTING.md](CONTRIBUTING.md) explains how to add it.
 - **ontoplano**: optional
 - **PC**: only if you want to run the legacy daemon. Linux with Bluetooth,
   Python 3.10+, [uv](https://docs.astral.sh/uv/).
@@ -121,9 +124,10 @@ make set-token                          # paste the token; stored 0600
 make phone-qr                           # scan this from the app
 ```
 
-**Moving the weight history this repo already holds into ontoplano.** The old
-`weights.db` has years of raw scale rows in it; the phone's store only has what
-the phone itself has measured.
+**Moving an existing weight history into ontoplano.** If you ran the old daemon
+you have a `weights.db` full of raw scale rows; the phone's store only ever has
+what the phone itself measured. (No database ships with this repository — those
+are somebody's actual weigh-ins.)
 
 ```bash
 make backfill      # collapse the raw log into weigh-ins
@@ -308,21 +312,31 @@ app in bare-feet mode threw the weigh-in away entirely.
 
 The weight log only ever contains `0xa4` and `0x26` rows, because those were the
 only two the old PC daemon accepted — which is how the stepped-off bit went
-unnoticed for so long. The `btmon` captures in `xiaomi-exploration/` (taken
-mid-*subida*, mid-ascent) are where `0x04` comes from.
+unnoticed for so long. `0x04` was found by capturing raw `btmon` output partway
+up, mid-step. Those captures are not in this repository: a Bluetooth log carries
+the MAC address of every device in the house.
 
-### Assets
+### Ringtones
 
-The app ships with `trombetas.mp3` (the hard-alarm siren) and `bell.mp3` (played
-on wrong passphrase input) in `lanalarm/app/src/main/assets/`.
+The app ships **no audio**. Out of the box both kinds of alarm ring the phone's
+own alarm sound, and you never have to know this section exists.
 
-Soft alarms look for `soft.mp3` in the same directory. If it is absent they fall
-back to the siren — better than failing to ring at all — so drop a gentler tone in
-there if you want the distinction:
+If you want your own, drop MP3s into `lanalarm/app/src/main/assets/` before you
+build:
 
-```
-lanalarm/app/src/main/assets/soft.mp3
-```
+| File | Played when |
+|---|---|
+| `custom-alarm.mp3` | A hard alarm rings |
+| `custom-alarm-soft.mp3` | A soft alarm rings (falls back to `custom-alarm.mp3`, then the system sound) |
+| `custom-bell.mp3` | A wrong passphrase is typed. Purely decorative |
+
+Both alarm files loop, so pick something that survives six minutes at full
+volume. The directory ignores audio files, so your siren never ends up in a
+commit.
+
+Nothing is bundled on purpose: a sound file whose licence nobody can name is the
+one thing that can get a repository taken down, and what a siren should sound
+like is a matter of taste anyway.
 
 ## Project structure
 
@@ -338,12 +352,11 @@ massalarme/
 ├── requirements.txt        # Python dependencies
 ├── config.yaml.example     # Config template
 ├── alarms.json.example     # Schedule template
+├── CONTRIBUTING.md         # How to add support for another scale
+├── LICENSE                 # GNU AGPL v3
 └── lanalarm/               # Android app
     └── app/src/main/
-        ├── assets/
-        │   ├── trombetas.mp3    # hard-alarm siren
-        │   ├── soft.mp3         # ← you provide this (optional)
-        │   └── bell.mp3
+        ├── assets/              # empty; drop custom-alarm.mp3 here (optional)
         ├── kotlin/org/example/lanalarm/
         │   ├── ScaleScanner.kt          # Owns the BLE radio, nothing else
         │   ├── ScaleSession.kt          # One trip to the scale: show / stop / record
@@ -460,3 +473,27 @@ written to an image.
 
 On the legacy daemon, the token lives in `~/.config/massalarme/ontoplano_token`
 with mode `0600` — never in `config.yaml`, never in the repo.
+
+## Contributing
+
+**If you own a scale, that is the contribution this project wants.**
+
+Everything here is tested against exactly one piece of hardware — a Xiaomi MIBFS.
+The advertisement it listens for, the byte offsets it decodes, and the flag bits
+that decide you are actually stood on it are all that one model's. Nobody can add
+a second scale without owning one.
+
+The job is three steps: run `make listen` and capture what your scale broadcasts,
+work out which bytes carry the weight and which bit means *settled*, then add a
+decoder to `ScaleCodec` with your captured payloads as test fixtures.
+[CONTRIBUTING.md](CONTRIBUTING.md) walks through all three, including the two
+flag bits that are easy to confuse and the bug that confusing them causes.
+
+It also covers running the two test suites, what is pinned across the Kotlin and
+Python implementations, and what must never be committed — nobody's weigh-ins,
+nobody's Bluetooth captures, and no audio.
+
+## Licence
+
+[GNU Affero General Public License v3.0](LICENSE). If you run a modified version
+as a network service, its users are entitled to its source.

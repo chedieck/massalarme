@@ -1,28 +1,19 @@
-# TODO — publishing massalarme
+# TODO — massalarme
 
-A short plan to get this from "works on my phone" to a public GitHub repo a
-stranger can install. Roughly in order; each step is independently shippable.
+Roughly in order; each step is independently shippable.
 
-## 0. Scrub the repo before the first public push
+## Done before the first public push
 
-Nothing else on this list matters if the first push leaks personal data.
-
-`weights.db`, `alarms.yaml`, `local.properties`, `nvim.log`, `.sisyphus/` and
-the tracked `.pyc` files are **untracked and ignored as of the last commit**, and
-the two `.webm` music files are deleted at HEAD. That is not enough on its own:
-they are all still in the history.
-
-- [ ] Rewrite the history (`git filter-repo`) or publish from a fresh, squashed
-      initial commit. `weights.db` is real weigh-ins and the two `.webm` files
-      are tens of MB of someone else's recordings, so neither can ship.
-- [ ] Ship `weights.db.example` or nothing at all, and let the daemon create it.
-- [ ] Audio licensing: `trombetas.mp3`, `bell.mp3`, `Audio/*.ogg`. Either confirm
-      they are freely redistributable and record the source in
-      `Audio/CREDITS.md`, or replace them with a CC0 set. A repo that ships
-      unclearable audio cannot be published at all.
-- [ ] `git log -p -S onto_` for a leaked ontoplano token. Rotate it if one is
-      there. (`xiaomi-exploration/` is untracked and holds raw `btmon` captures
-      and a MAC address — keep it that way.)
+- History rewritten with `git filter-repo`. `weights.db`, `alarms.yaml`,
+  `local.properties`, `nvim.log`, `.sisyphus/`, the tracked `.pyc` files, the raw
+  `btmon` captures and two large `.webm` recordings are gone from every commit,
+  not just from `HEAD`.
+- The daemon's hardcoded phone MAC and `min_weight_kg: 68` default are gone. The
+  MAC now defaults to empty, which skips LAN discovery instead of matching the
+  first neighbour on the network.
+- All bundled audio removed. Alarms ring the system alarm sound unless an
+  optional `custom-alarm.mp3` is dropped into the app's assets directory.
+- `LICENSE` (AGPL-3.0) and `CONTRIBUTING.md` added.
 
 ## 1. Decide the repo shape
 
@@ -40,11 +31,9 @@ massalarme/
 - [ ] Rename the Android package `org.example.lanalarm` → something real
       (`com.chedieck.massalarme`). `org.example` is a placeholder namespace and
       reads as unfinished on any store page.
-- [ ] Add a `LICENSE` (MIT or AGPL — pick one).
 - [ ] Decide whether the daemon stays at all. It is the reference implementation
-      the Kotlin ports are tested against and it holds the weight history, which
-      is a real argument for keeping it. It is also a second implementation of
-      things the phone now does alone.
+      the Kotlin ports are tested against, which is a real argument for keeping
+      it. It is also a second implementation of things the phone now does alone.
 
 ## 2. Ship it
 
@@ -77,7 +66,5 @@ treated as success, 422s dropped, 429 with `Retry-After`, configurable base URL,
 - [ ] CI: GitHub Actions running `make test` (pytest + the Robolectric suite) and
       `./gradlew assembleDebug`. The Android side needs a JDK 17 setup step and
       `android-actions/setup-android`.
-- [ ] `CONTRIBUTING.md`: how to run the daemon against fake data, how to
-      regenerate fixtures, where the BLE decode lives.
-- [ ] Be explicit that this is tested against one scale (Xiaomi MIBFS) and that
-      the byte offsets in `ScaleCodec` are that hardware's.
+- [ ] Support a second scale. `CONTRIBUTING.md` describes the work; the blocker
+      is that nobody here owns one.
