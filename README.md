@@ -452,34 +452,13 @@ or `422` is treated as permanent so the queue cannot wedge; a `429` or `5xx` hol
 the reading, because a server having a bad minute is not a reason to lose a
 weigh-in.
 
-## Security
-
-There is no LAN protocol left, so there is no shared secret and nothing listening
-on a port. The app makes exactly one kind of outbound request: to the ontoplano
-address you typed in.
-
-The ontoplano token is encrypted with a key held in the **Android Keystore** —
-hardware-backed on most phones — and stored in the app's private preferences. The
-key is deliberately not bound to device unlock: a weigh-in has to be publishable
-while the phone is locked on a bedside table, which is exactly when it cannot be
-unlocked. If a device's keystore refuses the key, the token is stored as-is and
-**the settings screen says so** rather than implying a protection that is not
-there.
-
-The token is never rendered back into the settings field, never logged, and never
-written to an image.
-
-On the legacy daemon, the token lives in `~/.config/massalarme/ontoplano_token`
-with mode `0600` — never in `config.yaml`, never in the repo.
-
 ## Contributing
 
 **If you own a scale, that is the contribution this project wants.**
 
 Everything here is tested against exactly one piece of hardware — a Xiaomi MIBFS.
 The advertisement it listens for, the byte offsets it decodes, and the flag bits
-that decide you are actually stood on it are all that one model's. Nobody can add
-a second scale without owning one.
+that decide you are actually stood on it are all that one model's.
 
 The job is three steps: run `make listen` and capture what your scale broadcasts,
 work out which bytes carry the weight and which bit means *settled*, then add a
@@ -490,8 +469,3 @@ flag bits that are easy to confuse and the bug that confusing them causes.
 It also covers running the two test suites, what is pinned across the Kotlin and
 Python implementations, and what must never be committed — nobody's weigh-ins,
 nobody's Bluetooth captures, and no audio.
-
-## Licence
-
-[GNU Affero General Public License v3.0](LICENSE). If you run a modified version
-as a network service, its users are entitled to its source.
