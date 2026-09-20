@@ -83,7 +83,7 @@ object AppSettings {
      * to inconvenience. It is a default now, not a rule.
      */
     const val DEFAULT_PASSPHRASE =
-        "Act as if what you do makes a difference: it does."
+        "Act as if what you do makes a difference. It does."
 
     const val DEFAULT_SNOOZE_MINUTES = 9
 

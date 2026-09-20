@@ -6,8 +6,7 @@ An alarm clock you cannot switch off from bed. It only goes quiet once you have
 stood on your Xiaomi BLE scale, and it shows your weight climbing on the lock
 screen while you do it.
 
-Everything runs on the phone. There is no server to keep awake, nothing polling
-in the background, and no account required.
+Everything runs on the phone.
 
 ## How it works
 
@@ -45,8 +44,7 @@ nothing changes about how the alarm behaves.
 
 A hard alarm only demands the scale **when the phone is on your home wifi** —
 that is where the scale is. Away from home it degrades to a soft alarm and tells
-you why, rather than trapping you with a siren in a hotel room. The same happens
-if the Bluetooth permission is missing.
+you why. The same happens if the Bluetooth permission is missing.
 
 While it rings, the dismiss screen shows the live reading off the scale: the
 number climbing as you step on, then whether it has settled and whether the
@@ -58,7 +56,7 @@ conclude the app is broken and reach for the passphrase.
 to the one this app shipped with:
 
 ```
-Act as if what you do makes a difference: it does.
+Act as if what you do makes a difference. It does.
 ```
 
 Set your own under **Settings → Dismissal**, or switch it off entirely and make
