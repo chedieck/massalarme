@@ -122,6 +122,11 @@ make set-token                          # paste the token; stored 0600
 make phone-qr                           # scan this from the app
 ```
 
+The token comes from ontoplano's **Settings → Integrations**, with
+`streams:write` and `schedule:read` ticked — see
+[ontoplano](#ontoplano) for why. `make check-ontoplano` prints which scopes the
+stored token actually carries.
+
 **Moving an existing weight history into ontoplano.** If you ran the old daemon
 you have a `weights.db` full of raw scale rows; the phone's store only ever has
 what the phone itself measured. (No database ships with this repository — those
@@ -237,9 +242,11 @@ That is the app working. Everything below is optional.
 
 5. Under **Settings → Dismissal**, set your own passphrase or switch it off, and
    pick a snooze length.
-6. Under **Settings → ontoplano**, paste a server address and token — or tap
-   **Scan QR** and scan the code from `make phone-qr` on a machine that already
-   holds a token.
+6. Under **Settings → ontoplano**, paste a token — or tap **Scan QR** and scan
+   the code from `make phone-qr` on a machine that already holds one. Create the
+   token in ontoplano under **Settings → Integrations**, with the
+   `streams:write` and `schedule:read` scopes ticked; see
+   [ontoplano](#ontoplano) for what each one buys you.
 
 **Listen for scale** records a weigh-in outside an alarm, and is the way to check
 the scale is reachable at all: the reading appears under the button as it
@@ -407,32 +414,51 @@ the thing that was wrong.
 Optional. Switch it on and the app publishes weigh-ins and can read your planner
 back to set alarms; leave it off and nothing about the alarm changes.
 
-**On the phone**, under **Settings → ontoplano**: paste the server address and a
-token, then **Save + test**. The test calls `/api/v1/me`, which needs no scope, so
-it tells you whether the token works and whose account it is — the useful answer,
-rather than "saved".
+### Getting a token
 
-To avoid typing a token on a phone keyboard, generate the QR on a machine that
-already holds one:
+In ontoplano, go to **Settings → Integrations** and create an API token. A token
+there carries **scopes** — the permissions it is allowed to use — and you have to
+tick them yourself; a token with none is accepted by the app and then cannot do
+anything. Tick these two:
+
+| Scope | Needed for | Without it |
+|-------|------------|------------|
+| `streams:write` | Publishing weigh-ins into the `massalarme.weight` stream. | Weigh-ins stay on the phone. The queue holds them and never drains. |
+| `schedule:read` | Reading planner occurrences, so a planned task can ring. | No task ever becomes an alarm. Your hand-made alarms are unaffected. |
+
+One more is worth ticking if your ontoplano offers it, and is safe to skip:
+
+| Scope | Needed for | Without it |
+|-------|------------|------------|
+| `plugin:declare` | Registering the stream's name, unit and meta keys so ontoplano charts it without guessing. | The stream is rendered from the server's defaults. Publishing and alarms are unaffected. |
+
+`streams:read` is deliberately **not** requested: the phone owns its readings and
+never needs them back. Nothing here can read your planner's contents beyond the
+scheduled occurrences, or write anything other than weight points.
+
+The token is not your ontoplano password, and the app stores it in the Android
+keystore rather than in settings — if the keystore refuses, the settings screen
+says so instead of pretending.
+
+### Connecting the phone
+
+**Settings → ontoplano**: the server address is prefilled with `https://app.ontoplano.com`
+(change it if you self-host), paste the token under it, then **Save + test**. The
+test calls `/api/v1/me`, which needs no scope, so it tells you whether the token
+works and whose account it is — the useful answer, rather than "saved". Once a
+token is stored the field is replaced by **Token stored**; tap **Replace** to swap
+it.
+
+To avoid typing a 40-character token on a phone keyboard, generate the QR on a
+machine that already holds one:
 
 ```bash
-make set-token     # paste the token from /settings/integrations
+make set-token     # paste the token from Settings → Integrations
 make phone-qr      # scan this from Settings → ontoplano → Scan QR
 ```
 
 The QR carries the base URL and the token and is printed, never written to an
 image — a token saved as a PNG is a token in someone's photo roll.
-
-**Scopes**, and why each is needed:
-
-| Scope | For |
-|-------|-----|
-| `streams:write` | Publishing weigh-ins. The whole point. |
-| `schedule:read` | Reading planner occurrences, so a task can ring. |
-| `plugin:declare` | Registering the manifest at `PUT /api/v1/plugin`. |
-
-`streams:read` is deliberately **not** requested: the phone owns its readings and
-never needs them back.
 
 **Which tasks become alarms** is decided on the phone, not in ontoplano — it
 reports what is scheduled and knows nothing about alarms, scales or ringtones.
