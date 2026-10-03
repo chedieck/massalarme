@@ -3,6 +3,7 @@ package org.example
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.example.lanalarm.Ontoplano
+import org.example.lanalarm.OntoplanoSchedule
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -75,8 +76,16 @@ class OntoplanoClientTest {
         )
     }
 
+    /**
+     * The manifest declares the vocabulary the sync actually reads.
+     *
+     * `attributeKeys` is a list of *objects*: sending bare names is what earned
+     * `each attribute key must be an object` from the real server, and the
+     * settings screen is written from the same constants, so a drift here is a
+     * screen telling somebody to type a key nothing looks for.
+     */
     @Test
-    fun `the plugin manifest is a PUT naming the meta keys this app writes`() {
+    fun `the plugin manifest declares the alarm attribute keys as objects`() {
         enqueue(200)
         client().declarePlugin()
 
@@ -86,11 +95,26 @@ class OntoplanoClientTest {
 
         val body = JSONObject(request.body.readUtf8())
         assertEquals(Ontoplano.SOURCE, body.getString("source"))
-        val keys = body.getJSONArray("metaKeys")
-        val declared = (0 until keys.length()).map { keys.getString(it) }
+
+        val keys = body.getJSONArray("attributeKeys")
+        val declared = (0 until keys.length()).map { keys.getJSONObject(it).getString("key") }
+        assertEquals(
+            listOf(
+                OntoplanoSchedule.ATTR_RING,
+                OntoplanoSchedule.ATTR_SOFT,
+                OntoplanoSchedule.ATTR_HARD
+            ).sorted(),
+            declared.sorted()
+        )
         assertTrue(
-            "impedance is written on every bare-feet weigh-in and has to be declared",
-            "impedance" in declared
+            "a key with no description is a key nobody can act on",
+            (0 until keys.length()).all {
+                keys.getJSONObject(it).getString("description").isNotBlank()
+            }
+        )
+        assertFalse(
+            "metaKeys is deprecated server-side and answers with a warning",
+            body.has("metaKeys")
         )
     }
 
@@ -114,6 +138,52 @@ class OntoplanoClientTest {
             assertEquals("each attribute key must be an object", e.message)
             assertFalse("the payload will never become right by retrying", e.retryable)
         }
+    }
+
+    /**
+     * `/me` has no display name to report, which is what made the settings
+     * screen say "Connected as connected" — it looked for `email`, `name` and
+     * `username`, found none of them and fell through to its own placeholder.
+     * What the endpoint does answer is the scopes, which is the question worth
+     * asking during setup.
+     */
+    @Test
+    fun `the scopes a token carries are read off the me response`() {
+        val me = JSONObject(
+            """{"user_id":"u_1","scopes":["streams:write","schedule:read"],"timezone":"America/Sao_Paulo"}"""
+        )
+
+        assertEquals(listOf("streams:write", "schedule:read"), Ontoplano.scopesOf(me))
+        assertTrue(
+            "a token with both required scopes is missing nothing",
+            Ontoplano.missingScopes(me).isEmpty()
+        )
+    }
+
+    @Test
+    fun `a narrow token is reported by what it is missing, not just as a failure`() {
+        val me = JSONObject("""{"user_id":"u_1","scopes":["schedule:read"]}""")
+        assertEquals(listOf("streams:write"), Ontoplano.missingScopes(me))
+
+        // No scopes at all is the shape of a token created with nothing ticked,
+        // which authenticates happily and then does nothing.
+        val bare = JSONObject("""{"user_id":"u_1","scopes":[]}""")
+        assertEquals(Ontoplano.REQUIRED_SCOPES, Ontoplano.missingScopes(bare))
+        assertEquals(Ontoplano.REQUIRED_SCOPES, Ontoplano.missingScopes(JSONObject()))
+    }
+
+    @Test
+    fun `reading points back asks for the newest first and bounds the batch`() {
+        enqueue(200, """{"points":[],"count":0}""")
+        client().fetchPoints(limit = 99_999)
+
+        val path = server.takeRequest().path.orEmpty()
+        assertTrue("wrong stream: $path", path.startsWith("/api/v1/streams/${Ontoplano.STREAM_SLUG}/points"))
+        assertTrue("newest first or the chart starts at the beginning of time", "order=desc" in path)
+        assertTrue(
+            "the server caps a request at ${Ontoplano.MAX_POINTS_PER_REQUEST}",
+            "limit=${Ontoplano.MAX_POINTS_PER_REQUEST}" in path
+        )
     }
 
     @Test

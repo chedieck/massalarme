@@ -318,6 +318,12 @@
                 android:text=""
                 android:layout_marginTop="10dp" />
 
+            <!--
+              Nothing to configure here on purpose. Which block rings is a
+              property of the block, set in Ontoplano, so this is a reference
+              card rather than a settings form — there is no pattern to keep in
+              step with whatever the task is called this month.
+            -->
             <TextView
                 style="@style/SettingsLabel"
                 android:text="Tasks that become alarms"
@@ -325,42 +331,19 @@
 
             <TextView
                 style="@style/SettingsCaption"
-                android:text="A pattern matched against planned task titles. Leave empty and ontoplano never creates an alarm." />
-
-            <EditText
-                android:id="@+id/ontoplano_pattern"
-                style="@style/SettingsInput"
-                android:hint="e.g. wake up|acordar"
-                android:inputType="text" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:baselineAligned="false"
-                android:layout_marginTop="8dp">
-
-                <TextView
-                    android:id="@+id/ontoplano_kind_soft"
-                    style="@style/SettingsSegment"
-                    android:text="Soft" />
-
-                <TextView
-                    android:id="@+id/ontoplano_kind_hard"
-                    style="@style/SettingsSegment"
-                    android:text="Hard"
-                    android:layout_marginStart="8dp" />
-            </LinearLayout>
+                android:text="Give a planned block one of these attributes in Ontoplano. Nothing else becomes an alarm." />
 
             <TextView
-                android:id="@+id/ontoplano_kind_caption"
-                style="@style/SettingsCaption"
+                android:id="@+id/ontoplano_vocabulary"
+                style="@style/SettingsValue"
+                android:layout_marginTop="8dp"
+                android:fontFamily="monospace"
+                android:textSize="13sp"
                 android:text="" />
 
-            <Button
-                android:id="@+id/ontoplano_rule_save"
-                style="@style/SettingsGhostButton"
-                android:text="Save rule and sync now" />
+            <TextView
+                style="@style/SettingsCaption"
+                android:text="Hard wins if a block carries both. true, 1, yes, y and on all count as yes; anything else is a no." />
         </LinearLayout>
 
         <!-- ── Permissions ─────────────────────────────────────────── -->

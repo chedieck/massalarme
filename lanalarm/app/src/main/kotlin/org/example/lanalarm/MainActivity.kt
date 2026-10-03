@@ -97,11 +97,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ontoplanoSave: Button
     private lateinit var scanSecretButton: Button
     private lateinit var ontoplanoStatus: TextView
-    private lateinit var ontoplanoPattern: EditText
-    private lateinit var ontoplanoKindHard: TextView
-    private lateinit var ontoplanoKindSoft: TextView
-    private lateinit var ontoplanoKindCaption: TextView
-    private lateinit var ontoplanoRuleSave: Button
+    private lateinit var ontoplanoVocabulary: TextView
 
     // Settings: permissions and background
     private lateinit var permissionsStatus: TextView
@@ -243,11 +239,7 @@ class MainActivity : AppCompatActivity() {
         ontoplanoSave = findViewById(R.id.ontoplano_save)
         scanSecretButton = findViewById(R.id.scan_secret)
         ontoplanoStatus = findViewById(R.id.ontoplano_status)
-        ontoplanoPattern = findViewById(R.id.ontoplano_pattern)
-        ontoplanoKindHard = findViewById(R.id.ontoplano_kind_hard)
-        ontoplanoKindSoft = findViewById(R.id.ontoplano_kind_soft)
-        ontoplanoKindCaption = findViewById(R.id.ontoplano_kind_caption)
-        ontoplanoRuleSave = findViewById(R.id.ontoplano_rule_save)
+        ontoplanoVocabulary = findViewById(R.id.ontoplano_vocabulary)
 
         permissionsStatus = findViewById(R.id.permissions_status)
         grantPermissionsButton = findViewById(R.id.grant_permissions)
@@ -304,9 +296,6 @@ class MainActivity : AppCompatActivity() {
             ontoplanoToken.requestFocus()
         }
         scanSecretButton.setOnClickListener { requestScan() }
-        ontoplanoKindHard.setOnClickListener { selectOntoplanoKind(AlarmSchedule.KIND_HARD) }
-        ontoplanoKindSoft.setOnClickListener { selectOntoplanoKind(AlarmSchedule.KIND_SOFT) }
-        ontoplanoRuleSave.setOnClickListener { applyOntoplanoRule() }
 
         weightRange30.setOnClickListener { setWeightRange(30) }
         weightRange90.setOnClickListener { setWeightRange(90) }
@@ -525,24 +514,19 @@ class MainActivity : AppCompatActivity() {
         } else {
             "Token stored — unencrypted, this device's keystore refused it"
         }
-        if (!ontoplanoPattern.hasFocus()) {
-            ontoplanoPattern.setText(AppSettings.ontoplanoPattern(this))
-        }
-
-        val kind = AppSettings.ontoplanoKind(this)
-        ontoplanoKindHard.isSelected = kind == AlarmSchedule.KIND_HARD
-        ontoplanoKindSoft.isSelected = kind == AlarmSchedule.KIND_SOFT
-        ontoplanoKindCaption.text = if (kind == AlarmSchedule.KIND_HARD) {
-            "Planned tasks ring the siren and need the scale. Snooze still works."
-        } else {
-            "Planned tasks ring gently and dismiss with one tap."
-        }
-
         ontoplanoAccount.text = when {
             !enabled -> "Off"
             AppSettings.ontoplanoClient(this) == null -> "Not configured"
             else -> AppSettings.ontoplanoBaseUrl(this).orEmpty()
         }
+
+        // Written out from the constants rather than the layout, so the screen
+        // cannot disagree with what the sync actually looks for.
+        ontoplanoVocabulary.text = listOf(
+            "${OntoplanoSchedule.ATTR_RING} = true",
+            "${OntoplanoSchedule.ATTR_SOFT} = true",
+            "${OntoplanoSchedule.ATTR_HARD} = true"
+        ).joinToString("\n")
 
         val error = AppSettings.prefs(this).getString(AppSettings.KEY_LAST_UPLOAD_ERROR, null)
         val lastOk = AppSettings.prefs(this).getString(AppSettings.KEY_LAST_UPLOAD_OK, null)
@@ -609,14 +593,18 @@ class MainActivity : AppCompatActivity() {
             }
             val message = try {
                 val me = client.whoami()
-                val user = listOf("email", "name", "username")
-                    .firstNotNullOfOrNull { me.optString(it).takeIf { v -> v.isNotBlank() } }
-                    ?: "connected"
                 runCatching { client.declarePlugin() }
                     .onFailure { Log.i(TAG, "Plugin manifest not accepted: ${it.message}") }
                 runCatching { client.declareStream() }
                     .onFailure { Log.i(TAG, "Stream not declared yet: ${it.message}") }
-                "Connected as $user"
+
+                val missing = Ontoplano.missingScopes(me)
+                if (missing.isEmpty()) {
+                    "Connected. The token can do everything the app needs."
+                } else {
+                    "Connected, but the token is missing ${missing.joinToString(", ")} — " +
+                        "create a new one with those ticked."
+                }
             } catch (e: Ontoplano.Failure) {
                 OntoplanoSync.describe(e)
             } catch (e: Exception) {
@@ -629,25 +617,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun selectOntoplanoKind(kind: String) {
-        AppSettings.setOntoplanoRule(this, ontoplanoPattern.text.toString(), kind)
-        renderOntoplano()
-    }
-
-    private fun applyOntoplanoRule() {
-        val pattern = ontoplanoPattern.text.toString().trim()
-        if (pattern.isNotEmpty() && runCatching { Regex(pattern) }.isFailure) {
-            ontoplanoStatus.text = "That is not a valid pattern"
-            return
-        }
-
-        AppSettings.setOntoplanoRule(this, pattern, AppSettings.ontoplanoKind(this))
-        if (pattern.isEmpty()) {
-            ontoplanoStatus.text = "Cleared — no planned task will become an alarm."
-            return
-        }
-        syncOntoplanoInBackground(announce = true)
-    }
 
     /**
      * Run a full sync without the service.
@@ -806,9 +775,14 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 weightEntries = result.entries
+                val fromOntoplano = result.entries.count {
+                    it.source == WeightHistory.SOURCE_ONTOPLANO
+                }
                 weightSource.text = when {
                     result.error != null -> result.error
                     result.entries.isEmpty() -> "No weigh-ins recorded yet"
+                    fromOntoplano > 0 ->
+                        "${result.entries.size} weigh-ins · $fromOntoplano from Ontoplano"
                     else -> "${result.entries.size} weigh-ins"
                 }
                 renderWeightHistory()
@@ -913,7 +887,7 @@ class MainActivity : AppCompatActivity() {
 
         alarmsLastSync.text = when {
             !AppSettings.ontoplanoEnabled(this) -> ""
-            lastSync <= 0L -> "Never synced with ontoplano"
+            lastSync <= 0L -> "Waiting to sync with Ontoplano"
             else -> "Synced " + SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
                 .format(Date(lastSync))
         }

@@ -10,12 +10,14 @@ import pytest
 
 import schedule_sync
 from schedule_sync import (
+    ATTR_HARD,
+    ATTR_RING,
+    ATTR_SOFT,
     ORIGIN_ONTOPLANO,
     build_alarms,
     classify,
     merge_into_schedule,
     occurrence_to_alarm,
-    parse_rules,
 )
 
 NOW_MS = int(datetime(2026, 8, 9, 12, 0, 0).timestamp() * 1000)
@@ -33,53 +35,65 @@ def occurrence(**overrides) -> dict:
         "category": "duty",
         "label": "",
         "status": "pending",
+        # Marked hard by default, so a test about grouping or merging says
+        # nothing about how the kind was chosen.
+        "attributes": {ATTR_HARD: "true"},
     }
     base.update(overrides)
     return base
 
 
-RULES = parse_rules(
-    [
-        {"match": {"title": "(?i)wake up"}, "kind": "hard"},
-        {"match": {"category": "duty"}, "kind": "soft"},
-    ]
-)
-
-
 # ── Classification ───────────────────────────────────────────────────
 
 
-def test_a_wake_up_task_becomes_a_hard_alarm():
-    assert classify(occurrence(), RULES) == "hard"
+def test_the_hard_attribute_asks_for_the_siren_and_the_scale():
+    assert classify(occurrence(attributes={ATTR_HARD: "true"})) == "hard"
 
 
-def test_first_matching_rule_wins():
-    # "Wake up" is also category=duty, but the hard rule comes first.
-    assert classify(occurrence(title="Wake up"), RULES) == "hard"
-    assert classify(occurrence(title="Dentist"), RULES) == "soft"
+def test_the_short_attribute_rings_soft():
+    assert classify(occurrence(attributes={ATTR_RING: "true"})) == "soft"
 
 
-def test_an_occurrence_matching_nothing_gets_no_alarm():
-    assert classify(occurrence(title="Read a book", category="leisure"), RULES) is None
+def test_the_spelt_out_soft_attribute_is_the_same_thing():
+    assert classify(occurrence(attributes={ATTR_SOFT: "true"})) == "soft"
 
 
-def test_title_matching_is_case_insensitive_when_the_regex_says_so():
-    assert classify(occurrence(title="WAKE UP EARLY"), RULES) == "hard"
+def test_hard_wins_when_a_block_carries_both():
+    # Guessing the other way lets a block that is meant to need the scale be
+    # dismissed with a tap, which is the failure that matters.
+    assert classify(occurrence(attributes={ATTR_SOFT: "true", ATTR_HARD: "true"})) == "hard"
 
 
-def test_a_bad_regex_is_skipped_rather_than_crashing():
-    rules = parse_rules([{"match": {"title": "([unclosed"}, "kind": "hard"}])
-    assert rules == []
+def test_a_block_with_no_attributes_gets_no_alarm():
+    assert classify(occurrence(attributes={})) is None
+    assert classify({"id": "slot:1", "at_local": "2026-08-11T07:00:00"}) is None
 
 
-def test_an_unknown_kind_is_skipped():
-    assert parse_rules([{"match": {"category": "duty"}, "kind": "nuclear"}]) == []
+def test_the_title_is_no_longer_consulted():
+    # The whole point of the move: renaming a block must not silence it, and
+    # naming an unrelated one "wake up" must not make it ring.
+    assert classify(occurrence(title="Levantar", attributes={ATTR_RING: "true"})) == "soft"
+    assert classify(occurrence(title="Wake up", attributes={})) is None
 
 
-def test_label_matching():
-    rules = parse_rules([{"match": {"label": "gym"}, "kind": "soft"}])
-    assert classify(occurrence(label="gym"), rules) == "soft"
-    assert classify(occurrence(label="other"), rules) is None
+@pytest.mark.parametrize("value", ["true", "TRUE", " yes ", "1", "y", "on"])
+def test_only_an_explicit_yes_rings(value):
+    assert classify(occurrence(attributes={ATTR_RING: value})) == "soft"
+
+
+@pytest.mark.parametrize("value", ["false", "0", "no", "", "maybe", "ture"])
+def test_anything_else_is_a_no(value):
+    # Including the values that look like a mistake: an alarm clock that rings
+    # at 05:00 because of a typo is worse than one that stays quiet.
+    assert classify(occurrence(attributes={ATTR_RING: value})) is None
+
+
+def test_attributes_are_also_read_under_their_old_name():
+    # An older ontoplano answers the same object as `meta`.
+    occ = occurrence(attributes={})
+    del occ["attributes"]
+    occ["meta"] = {ATTR_HARD: "true"}
+    assert classify(occ) == "hard"
 
 
 # ── Alarm construction ───────────────────────────────────────────────
@@ -114,20 +128,20 @@ def test_build_alarms_over_a_whole_response():
         "timezone": "America/Sao_Paulo",
         "occurrences": [
             occurrence(id="slot:1", title="Wake up"),
-            occurrence(id="slot:2", title="Dentist", category="duty"),
-            occurrence(id="slot:3", title="Nap", category="leisure"),
+            occurrence(id="slot:2", title="Dentist", attributes={ATTR_RING: "true"}),
+            occurrence(id="slot:3", title="Nap", attributes={}),
         ],
     }
 
-    alarms = build_alarms(schedule, RULES, NOW_MS)
+    alarms = build_alarms(schedule, NOW_MS)
 
     assert [a["kind"] for a in alarms] == ["hard", "soft"]
     assert len(alarms) == 2
 
 
 def test_an_empty_schedule_is_not_an_error():
-    assert build_alarms({"occurrences": []}, RULES, NOW_MS) == []
-    assert build_alarms({}, RULES, NOW_MS) == []
+    assert build_alarms({"occurrences": []}, NOW_MS) == []
+    assert build_alarms({}, NOW_MS) == []
 
 
 # ── Merging ──────────────────────────────────────────────────────────
@@ -138,7 +152,7 @@ def test_hand_made_alarms_are_never_touched():
         "version": 2,
         "alarms": [{"id": "manual-1", "name": "My alarm", "time": "06:00", "enabled": True}],
     }
-    derived = build_alarms({"occurrences": [occurrence()]}, RULES, NOW_MS)
+    derived = build_alarms({"occurrences": [occurrence()]}, NOW_MS)
 
     merged = merge_into_schedule(current, derived, now_ms=NOW_MS, horizon_days=7)
 
@@ -148,7 +162,7 @@ def test_hand_made_alarms_are_never_touched():
 
 
 def test_resyncing_updates_in_place_instead_of_duplicating():
-    derived = build_alarms({"occurrences": [occurrence()]}, RULES, NOW_MS)
+    derived = build_alarms({"occurrences": [occurrence()]}, NOW_MS)
     once = merge_into_schedule({"version": 2, "alarms": []}, derived, now_ms=NOW_MS, horizon_days=7)
     twice = merge_into_schedule(once, derived, now_ms=NOW_MS, horizon_days=7)
 
@@ -158,22 +172,21 @@ def test_resyncing_updates_in_place_instead_of_duplicating():
 def test_an_unchanged_occurrence_does_not_bump_updated_at():
     """Otherwise a sync every few minutes would keep beating a genuine edit made
     on the phone, whose merge resolves by latest updated_at."""
-    derived = build_alarms({"occurrences": [occurrence()]}, RULES, NOW_MS)
+    derived = build_alarms({"occurrences": [occurrence()]}, NOW_MS)
     once = merge_into_schedule({"version": 2, "alarms": []}, derived, now_ms=NOW_MS, horizon_days=7)
 
-    later = build_alarms({"occurrences": [occurrence()]}, RULES, NOW_MS + 3_600_000)
+    later = build_alarms({"occurrences": [occurrence()]}, NOW_MS + 3_600_000)
     twice = merge_into_schedule(once, later, now_ms=NOW_MS + 3_600_000, horizon_days=7)
 
     assert twice["alarms"][0]["updated_at"] == NOW_MS
 
 
 def test_a_changed_time_does_bump_updated_at():
-    derived = build_alarms({"occurrences": [occurrence()]}, RULES, NOW_MS)
+    derived = build_alarms({"occurrences": [occurrence()]}, NOW_MS)
     once = merge_into_schedule({"version": 2, "alarms": []}, derived, now_ms=NOW_MS, horizon_days=7)
 
     moved = build_alarms(
         {"occurrences": [occurrence(at_local="2026-08-11T08:30:00")]},
-        RULES,
         NOW_MS + 3_600_000,
     )
     twice = merge_into_schedule(once, moved, now_ms=NOW_MS + 3_600_000, horizon_days=7)
@@ -183,7 +196,7 @@ def test_a_changed_time_does_bump_updated_at():
 
 
 def test_an_occurrence_deleted_upstream_is_tombstoned():
-    derived = build_alarms({"occurrences": [occurrence()]}, RULES, NOW_MS)
+    derived = build_alarms({"occurrences": [occurrence()]}, NOW_MS)
     once = merge_into_schedule({"version": 2, "alarms": []}, derived, now_ms=NOW_MS, horizon_days=7)
 
     emptied = merge_into_schedule(once, [], now_ms=NOW_MS, horizon_days=7)
@@ -289,16 +302,6 @@ def test_the_encoded_secret_is_the_configured_one_case_aside():
     assert encoded.split(":")[1].lower() == SECRET
 
 
-def test_title_matching_ignores_case_without_needing_a_flag():
-    """The rule is typed on a phone keyboard; requiring "(?i)" to match
-    "Acordar" would be a trap."""
-    rules = parse_rules([{"match": {"title": "^acordar"}, "kind": "hard"}])
-
-    assert classify(occurrence(title="Acordar"), rules) == "hard"
-    assert classify(occurrence(title="ACORDAR CEDO"), rules) == "hard"
-    assert classify(occurrence(title="Nao acordar"), rules) is None  # ^ still anchors
-
-
 # ── Repeated activities ──────────────────────────────────────────────
 #
 # ontoplano's grid editor duplicates an activity across days, which arrives as
@@ -312,14 +315,12 @@ def gym(slot: int, day: int, time: str = "07:00", title: str = "Gym") -> dict:
     )
 
 
-GYM_RULES = parse_rules([{"match": {"title": "gym"}, "kind": "hard"}])
-
 
 def test_an_activity_repeated_across_days_becomes_one_weekly_alarm():
     # 10, 12 and 14 August 2026 are Monday, Wednesday and Friday.
     schedule = {"occurrences": [gym(1, 10), gym(2, 12), gym(3, 14)]}
 
-    alarms = build_alarms(schedule, GYM_RULES, NOW_MS)
+    alarms = build_alarms(schedule, NOW_MS)
 
     assert len(alarms) == 1
     assert alarms[0]["days"] == ["monday", "wednesday", "friday"]
@@ -328,7 +329,7 @@ def test_an_activity_repeated_across_days_becomes_one_weekly_alarm():
 
 
 def test_a_one_off_activity_keeps_its_date():
-    alarms = build_alarms({"occurrences": [gym(9, 11)]}, GYM_RULES, NOW_MS)
+    alarms = build_alarms({"occurrences": [gym(9, 11)]}, NOW_MS)
 
     assert len(alarms) == 1
     assert alarms[0]["date"] == "11-08-2026"
@@ -341,14 +342,13 @@ def test_the_same_activity_at_different_times_stays_separate():
         "occurrences": [gym(1, 10), gym(2, 12), gym(3, 10, "19:00"), gym(4, 12, "19:00")]
     }
 
-    alarms = build_alarms(schedule, GYM_RULES, NOW_MS)
+    alarms = build_alarms(schedule, NOW_MS)
 
     assert sorted(a["time"] for a in alarms) == ["07:00", "19:00"]
     assert all(a["days"] == ["monday", "wednesday"] for a in alarms)
 
 
 def test_different_activities_at_the_same_time_stay_separate():
-    rules = parse_rules([{"match": {"title": "gym|swim"}, "kind": "hard"}])
     schedule = {
         "occurrences": [
             gym(1, 10), gym(2, 12),
@@ -356,7 +356,7 @@ def test_different_activities_at_the_same_time_stay_separate():
         ]
     }
 
-    alarms = build_alarms(schedule, rules, NOW_MS)
+    alarms = build_alarms(schedule, NOW_MS)
 
     assert sorted(a["name"] for a in alarms) == ["Gym", "Swim"]
 
@@ -365,10 +365,10 @@ def test_the_weekly_id_is_stable_across_syncs():
     """Otherwise every sync would tombstone the alarm and add a new one."""
     schedule = {"occurrences": [gym(1, 10), gym(2, 12)]}
 
-    first = build_alarms(schedule, GYM_RULES, NOW_MS)
+    first = build_alarms(schedule, NOW_MS)
     # Same activity next week: different occurrence ids, same habit.
     later = build_alarms(
-        {"occurrences": [gym(77, 17), gym(78, 19)]}, GYM_RULES, NOW_MS + 604_800_000
+        {"occurrences": [gym(77, 17), gym(78, 19)]}, NOW_MS + 604_800_000
     )
 
     assert first[0]["id"] == later[0]["id"]
@@ -376,7 +376,7 @@ def test_the_weekly_id_is_stable_across_syncs():
 
 def test_a_repeated_activity_resyncs_without_duplicating():
     schedule = {"occurrences": [gym(1, 10), gym(2, 12)]}
-    derived = build_alarms(schedule, GYM_RULES, NOW_MS)
+    derived = build_alarms(schedule, NOW_MS)
 
     once = merge_into_schedule({"version": 2, "alarms": []}, derived, now_ms=NOW_MS, horizon_days=7)
     twice = merge_into_schedule(once, derived, now_ms=NOW_MS, horizon_days=7)

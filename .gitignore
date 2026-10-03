@@ -43,3 +43,6 @@ nvim.log
 .claude/
 .claude-docker/
 .claude-docker-EMERGENCY-BACKUP-*.tar.gz
+
+# Agent scratch space, masked from the host by a tmpfs.
+.ensaboai/

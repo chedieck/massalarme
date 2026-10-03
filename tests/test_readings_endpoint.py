@@ -212,60 +212,6 @@ async def test_sync_status_needs_the_key(api):
     assert response.status == 403
 
 
-# ── ontoplano rule from the phone ────────────────────────────────────
-
-
-def test_the_phone_can_set_the_task_matching_rule(monkeypatch, tmp_path):
-    """The pattern is edited on the phone but enforced here, because this is the
-    side holding the ontoplano token."""
-    cfg = {"shared_secret": SECRET, "ontoplano": {"schedule": {}}}
-    saved = {}
-    monkeypatch.setattr(alarm_manager, "_current_cfg", cfg)
-    monkeypatch.setattr(alarm_manager, "_save_config", lambda c: saved.update(c))
-
-    alarm_manager._apply_ontoplano_rule("(?i)^acordar", "hard")
-
-    rules = cfg["ontoplano"]["schedule"]["rules"]
-    assert rules == [{"match": {"title": "(?i)^acordar"}, "kind": "hard"}]
-    assert cfg["ontoplano"]["schedule"]["enabled"] is True
-    assert saved, "the rule must be persisted, not just held in memory"
-
-
-def test_an_empty_pattern_turns_schedule_sync_off(monkeypatch):
-    cfg = {
-        "shared_secret": SECRET,
-        "ontoplano": {"schedule": {"enabled": True, "rules": [{"match": {"title": "x"}}]}},
-    }
-    monkeypatch.setattr(alarm_manager, "_current_cfg", cfg)
-    monkeypatch.setattr(alarm_manager, "_save_config", lambda c: None)
-
-    alarm_manager._apply_ontoplano_rule("", "hard")
-
-    assert cfg["ontoplano"]["schedule"]["rules"] == []
-    assert cfg["ontoplano"]["schedule"]["enabled"] is False
-
-
-def test_an_invalid_pattern_is_refused_and_leaves_the_old_rule(monkeypatch):
-    existing = [{"match": {"title": "good"}, "kind": "hard"}]
-    cfg = {"shared_secret": SECRET, "ontoplano": {"schedule": {"rules": existing}}}
-    monkeypatch.setattr(alarm_manager, "_current_cfg", cfg)
-    monkeypatch.setattr(alarm_manager, "_save_config", lambda c: None)
-
-    alarm_manager._apply_ontoplano_rule("([unclosed", "hard")
-
-    assert cfg["ontoplano"]["schedule"]["rules"] == existing
-
-
-def test_an_unknown_kind_falls_back_to_hard(monkeypatch):
-    cfg = {"shared_secret": SECRET, "ontoplano": {"schedule": {}}}
-    monkeypatch.setattr(alarm_manager, "_current_cfg", cfg)
-    monkeypatch.setattr(alarm_manager, "_save_config", lambda c: None)
-
-    alarm_manager._apply_ontoplano_rule("wake", "nuclear")
-
-    assert cfg["ontoplano"]["schedule"]["rules"][0]["kind"] == "hard"
-
-
 # ── First-run backfill ───────────────────────────────────────────────
 
 

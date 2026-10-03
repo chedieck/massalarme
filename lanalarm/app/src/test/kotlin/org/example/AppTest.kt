@@ -3,8 +3,11 @@ package org.example
 import org.example.lanalarm.AlarmSchedule
 import org.example.lanalarm.Provisioning
 import org.example.lanalarm.ScaleCodec
+import org.example.lanalarm.WeightHistory
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -320,5 +323,105 @@ class ProvisioningTest {
         assertNull(Provisioning.normaliseBase(null))
         assertNull(Provisioning.normaliseBase("   "))
         assertNull(Provisioning.normaliseBase("/"))
+    }
+}
+
+/**
+ * The Weight tab's history, which is two sources folded into one list.
+ *
+ * The phone's store only ever holds what this phone measured, so somebody who
+ * backfilled years of scale history — or simply changed phones — saw a chart
+ * with two points on it. Everything here is about that fold going wrong in a
+ * way that silently hides weigh-ins.
+ */
+class WeightHistoryTest {
+
+    private fun entry(id: String, atMillis: Long, kg: Double, source: String) =
+        WeightHistory.Entry(
+            externalId = id,
+            atMillis = atMillis,
+            weightKg = kg,
+            impedance = null,
+            alarmName = null,
+            source = source
+        )
+
+    @Test
+    fun `an instant with milliseconds is still an instant`() {
+        // The phone writes seconds; ontoplano answers Date.toISOString(), which
+        // carries millis. Parsing only one shape dropped every published point.
+        assertEquals(
+            WeightHistory.parseUtc("2026-08-11T07:00:00Z"),
+            WeightHistory.parseUtc("2026-08-11T07:00:00.000Z")
+        )
+        assertNotNull(WeightHistory.parseUtc("2026-08-11T07:00:00.123Z"))
+        assertNull(WeightHistory.parseUtc("yesterday morning"))
+    }
+
+    @Test
+    fun `published points this phone never measured are added`() {
+        val local = listOf(entry("a", 3_000L, 80.0, WeightHistory.SOURCE_PHONE))
+        val published = listOf(
+            entry("a", 3_000L, 80.0, WeightHistory.SOURCE_ONTOPLANO),
+            entry("b", 1_000L, 82.0, WeightHistory.SOURCE_ONTOPLANO)
+        )
+
+        val merged = WeightHistory.merge(local, published)
+
+        assertEquals(listOf("a", "b"), merged.map { it.externalId })
+        assertEquals(
+            "local wins on a collision — it has the impedance and the alarm name",
+            WeightHistory.SOURCE_PHONE,
+            merged.first().source
+        )
+    }
+
+    @Test
+    fun `the merged list is newest first`() {
+        val merged = WeightHistory.merge(
+            listOf(entry("a", 1_000L, 80.0, WeightHistory.SOURCE_PHONE)),
+            listOf(entry("b", 9_000L, 82.0, WeightHistory.SOURCE_ONTOPLANO))
+        )
+        assertEquals(listOf("b", "a"), merged.map { it.externalId })
+    }
+
+    @Test
+    fun `a points response is read into entries`() {
+        val entries = WeightHistory.parsePoints(
+            JSONObject(
+                """
+                {"points":[
+                  {"external_id":"w1","at":"2026-08-11T07:00:00.000Z","value":81.4,
+                   "meta":{"impedance":512.0,"alarm_name":"Acordar"}},
+                  {"external_id":"w2","at":"2026-08-12T07:00:00.000Z","value":81.1,"meta":{}}
+                ],"count":2}
+                """
+            )
+        )
+
+        assertEquals(2, entries.size)
+        assertEquals(81.4, entries.first().weightKg, 0.001)
+        assertEquals(512.0, entries.first().impedance!!, 0.001)
+        assertEquals("Acordar", entries.first().alarmName)
+        assertNull("an empty meta object is not an impedance of zero", entries[1].impedance)
+        assertTrue(entries.all { it.source == WeightHistory.SOURCE_ONTOPLANO })
+    }
+
+    @Test
+    fun `a point missing what an entry needs is dropped, not guessed at`() {
+        val entries = WeightHistory.parsePoints(
+            JSONObject(
+                """
+                {"points":[
+                  {"at":"2026-08-11T07:00:00.000Z","value":81.4},
+                  {"external_id":"w2","value":81.4},
+                  {"external_id":"w3","at":"2026-08-11T07:00:00.000Z"},
+                  {"external_id":"w4","at":"2026-08-11T07:00:00.000Z","value":80.0}
+                ]}
+                """
+            )
+        )
+        assertEquals(listOf("w4"), entries.map { it.externalId })
+        assertEquals(emptyList<String>(), WeightHistory.parsePoints(JSONObject()).map { it.externalId })
     }
 }

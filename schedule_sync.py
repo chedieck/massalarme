@@ -1,23 +1,25 @@
 """Turn ontoplano planner occurrences into massalarme alarms.
 
-"Put a task 'wake up' at 07:00 Tuesday and that is when the alarm rings."
+"Mark the block you want to wake up for, and that is when the alarm rings."
 
 ontoplano reports *what is scheduled* and nothing else -- it knows nothing about
 alarms, ringtones, scales or wifi, and it should stay that way. Deciding which
 occurrences deserve an alarm, and whether that alarm is hard or soft, is
-massalarme's business and lives in `config.yaml`:
+massalarme's business, and it is read off the block's **attributes** -- the
+user-defined key/value pairs ontoplano stores on a task and never interprets:
 
-    ontoplano:
-      schedule:
-        enabled: true
-        days: 7
-        rules:
-          - match: {title: "(?i)wake up"}
-            kind: hard
-          - match: {category: duty}
-            kind: soft
+    massalarme      = true   ring gently, one tap dismisses it
+    soft_massalarme = true   the same thing, spelt out
+    hard_massalarme = true   ring the siren until the scale reports a weight
 
-First matching rule wins; occurrences that match nothing get no alarm.
+Hard wins if a block carries both. There is nothing to configure: marking the
+block that should wake you is a property of that block.
+
+This replaced a regex matched against the title, which meant the alarm depended
+on spelling -- renaming "Acordar" to "Levantar" silently stopped it happening.
+The same vocabulary is what the phone reads, in `OntoplanoSchedule.kt`; the two
+must agree, or one task becomes two different alarms depending on which side
+last synced.
 
 Alarms derived this way are dated one-shots carrying `origin: ontoplano` and the
 occurrence's stable `id`, so a re-sync updates them in place instead of piling up
@@ -28,8 +30,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import re
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -41,67 +41,54 @@ KIND_HARD = "hard"
 KIND_SOFT = "soft"
 
 
-@dataclass
-class Rule:
-    """One mapping from an occurrence to an alarm kind."""
+#: The source name, which is also the attribute namespace.
+SOURCE = "massalarme"
 
-    kind: str
-    title: Optional[re.Pattern] = None
-    category: Optional[str] = None
-    label: Optional[str] = None
+#: Rings gently, dismissed with one tap.
+ATTR_SOFT = f"soft_{SOURCE}"
 
-    def matches(self, occurrence: dict) -> bool:
-        if self.title is not None:
-            if not self.title.search(str(occurrence.get("title", ""))):
-                return False
-        if self.category is not None:
-            if str(occurrence.get("category", "")).lower() != self.category.lower():
-                return False
-        if self.label is not None:
-            if str(occurrence.get("label", "")).lower() != self.label.lower():
-                return False
-        # A rule with no conditions would match everything; treat it as a
-        # catch-all only if it was written that way deliberately.
-        return True
+#: Rings the siren and wants the scale. Beats ATTR_SOFT when both are set.
+ATTR_HARD = f"hard_{SOURCE}"
+
+#: The short spelling of ATTR_SOFT, and the one to reach for.
+ATTR_RING = SOURCE
+
+#: What counts as yes. Closed rather than "anything that is not false": an alarm
+#: clock that rings at 05:00 because a value was misspelt is worse than one that
+#: stays quiet and can be looked at over breakfast.
+TRUE_VALUES = frozenset({"true", "1", "yes", "y", "on"})
 
 
-def parse_rules(raw_rules: List[dict]) -> List[Rule]:
-    rules: List[Rule] = []
-    for entry in raw_rules or []:
-        if not isinstance(entry, dict):
-            continue
-        match = entry.get("match") or {}
-        kind = str(entry.get("kind", KIND_HARD)).lower()
-        if kind not in (KIND_HARD, KIND_SOFT):
-            logger.warning("Ignoring rule with unknown kind %r", kind)
-            continue
+def _attributes(occurrence: dict) -> dict:
+    """The block's attributes, under either name.
 
-        title_pattern = match.get("title")
-        try:
-            # Case-insensitive by default: "acordar" should match "Acordar",
-            # and nobody wants to remember to type (?i) to get there. An
-            # explicit (?i) in the pattern stays valid, just redundant.
-            compiled = re.compile(title_pattern, re.IGNORECASE) if title_pattern else None
-        except re.error as exc:
-            logger.warning("Ignoring rule with bad title regex %r: %s", title_pattern, exc)
-            continue
-
-        rules.append(
-            Rule(
-                kind=kind,
-                title=compiled,
-                category=match.get("category"),
-                label=match.get("label"),
-            )
-        )
-    return rules
+    ontoplano answers the same object twice -- as `attributes`, and as `meta`
+    for plugins written before the rename -- so reading both works against an
+    older instance without a second code path.
+    """
+    for key in ("attributes", "meta"):
+        value = occurrence.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
 
 
-def classify(occurrence: dict, rules: List[Rule]) -> Optional[str]:
-    """The alarm kind for this occurrence, or None if it deserves no alarm."""
-    for rule in rules:
-        if rule.matches(occurrence):
-            return rule.kind
+def _is_true(attributes: dict, key: str) -> bool:
+    return str(attributes.get(key, "")).strip().lower() in TRUE_VALUES
+
+
+def classify(occurrence: dict) -> Optional[str]:
+    """The alarm kind for this occurrence, or None if it deserves no alarm.
+
+    Hard wins: somebody who has said both things about one block has asked for
+    the stricter of the two, and guessing the other way lets a block that is
+    supposed to need the scale be dismissed with a tap.
+    """
+    attributes = _attributes(occurrence)
+    if _is_true(attributes, ATTR_HARD):
+        return KIND_HARD
+    if _is_true(attributes, ATTR_RING) or _is_true(attributes, ATTR_SOFT):
+        return KIND_SOFT
     return None
 
 
@@ -157,7 +144,7 @@ def _weekly_alarm_id(title: str, time_text: str) -> str:
     return f"op-w-{digest}"
 
 
-def build_alarms(schedule: dict, rules: List[Rule], now_ms: int) -> List[dict]:
+def build_alarms(schedule: dict, now_ms: int) -> List[dict]:
     """Map a whole `/schedule/upcoming` response into alarms.
 
     The same activity repeated across several days -- which is what ontoplano's
@@ -174,7 +161,7 @@ def build_alarms(schedule: dict, rules: List[Rule], now_ms: int) -> List[dict]:
     for occurrence in schedule.get("occurrences", []) or []:
         if not isinstance(occurrence, dict):
             continue
-        kind = classify(occurrence, rules)
+        kind = classify(occurrence)
         if kind is None:
             continue
         at_local = occurrence.get("at_local")

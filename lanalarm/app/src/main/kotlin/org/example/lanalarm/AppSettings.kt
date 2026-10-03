@@ -33,8 +33,6 @@ object AppSettings {
     const val KEY_ONTOPLANO_ENABLED = "ontoplano_enabled"
     const val KEY_ONTOPLANO_BASE_URL = "ontoplano_base_url"
     const val KEY_ONTOPLANO_TOKEN = "ontoplano_token"
-    const val KEY_ONTOPLANO_PATTERN = "ontoplano_pattern"
-    const val KEY_ONTOPLANO_KIND = "ontoplano_kind"
 
     // Dismissal
     const val KEY_PASSPHRASE = "dismiss_passphrase"
@@ -198,20 +196,6 @@ object AppSettings {
         val baseUrl = ontoplanoBaseUrl(context) ?: return null
         val token = ontoplanoToken(context) ?: return null
         return Ontoplano(Ontoplano.Config(baseUrl = baseUrl, token = token))
-    }
-
-    fun ontoplanoPattern(context: Context): String =
-        prefs(context).getString(KEY_ONTOPLANO_PATTERN, "") ?: ""
-
-    fun ontoplanoKind(context: Context): String =
-        prefs(context).getString(KEY_ONTOPLANO_KIND, AlarmSchedule.KIND_SOFT)
-            ?: AlarmSchedule.KIND_SOFT
-
-    fun setOntoplanoRule(context: Context, pattern: String, kind: String) {
-        prefs(context).edit()
-            .putString(KEY_ONTOPLANO_PATTERN, pattern.trim())
-            .putString(KEY_ONTOPLANO_KIND, kind)
-            .apply()
     }
 
     // ─── Provisioning ────────────────────────────────────────────────

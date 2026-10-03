@@ -273,8 +273,12 @@ registered alarm on both reboot and app update.
   permissions, background. One card per concern.
 - **Alarms** — the schedule. Tap an alarm to edit; ontoplano-derived ones carry a
   badge and are read-only.
-- **Weight** — your weigh-in history as a chart plus a list, from this phone's
-  own store.
+- **Weight** — your weigh-in history as a chart plus a list. This phone's own
+  store first, so the chart draws with no network at all, with anything published
+  to Ontoplano that this phone never measured folded in on top — a backfilled
+  scale log, or a reading from an older phone. That half needs the token to carry
+  `streams:read`; without it you simply see less history, and nothing nags about
+  it.
 
 ### Scale BLE flags
 
@@ -426,15 +430,15 @@ anything. Tick these two:
 | `streams:write` | Publishing weigh-ins into the `massalarme.weight` stream. | Weigh-ins stay on the phone. The queue holds them and never drains. |
 | `schedule:read` | Reading planner occurrences, so a planned task can ring. | No task ever becomes an alarm. Your hand-made alarms are unaffected. |
 
-One more is worth ticking if your ontoplano offers it, and is safe to skip:
+Two more are worth ticking, and both are safe to skip:
 
 | Scope | Needed for | Without it |
 |-------|------------|------------|
-| `plugin:declare` | Registering the stream's name, unit and meta keys so ontoplano charts it without guessing. | The stream is rendered from the server's defaults. Publishing and alarms are unaffected. |
+| `streams:read` | Showing weigh-ins published before this phone existed — a backfilled scale log, or a reading taken on another device. | The Weight tab shows only what this phone measured. Nothing warns you; there is just less history. |
+| `plugin:declare` | Naming the three `massalarme` attribute keys to your account, so Ontoplano shows them as this app's words on a task rather than as anonymous strings. | The keys still work. They are just unlabelled in Ontoplano's own screens. |
 
-`streams:read` is deliberately **not** requested: the phone owns its readings and
-never needs them back. Nothing here can read your planner's contents beyond the
-scheduled occurrences, or write anything other than weight points.
+Nothing here can read your planner's contents beyond the scheduled occurrences,
+or write anything other than weight points.
 
 The token is not your ontoplano password, and the app stores it in the Android
 keystore rather than in settings — if the keystore refuses, the settings screen
@@ -444,10 +448,11 @@ says so instead of pretending.
 
 **Settings → ontoplano**: the server address is prefilled with `https://app.ontoplano.com`
 (change it if you self-host), paste the token under it, then **Save + test**. The
-test calls `/api/v1/me`, which needs no scope, so it tells you whether the token
-works and whose account it is — the useful answer, rather than "saved". Once a
-token is stored the field is replaced by **Token stored**; tap **Replace** to swap
-it.
+test calls `/api/v1/me`, which needs no scope, so it answers the question worth
+asking: whether the token works, and whether it carries the scopes the app needs.
+A token that is missing one is named in the reply rather than failing later on a
+morning. Once a token is stored the field is replaced by **Token stored**; tap
+**Replace** to swap it.
 
 To avoid typing a 40-character token on a phone keyboard, generate the QR on a
 machine that already holds one:
@@ -460,17 +465,36 @@ make phone-qr      # scan this from Settings → ontoplano → Scan QR
 The QR carries the base URL and the token and is printed, never written to an
 image — a token saved as a PNG is a token in someone's photo roll.
 
-**Which tasks become alarms** is decided on the phone, not in ontoplano — it
-reports what is scheduled and knows nothing about alarms, scales or ringtones.
-Set a title pattern and a kind under **Settings → ontoplano**; an empty pattern
-means nothing becomes an alarm. Matching is case-insensitive without needing
-`(?i)`.
+### Which tasks become alarms
+
+Mark the block, in ontoplano, with an **attribute**. Attributes are the
+user-defined key/value pairs ontoplano stores on a task and never interprets —
+exactly so that a plugin can define its own vocabulary — and massalarme reads
+three of them:
+
+| Attribute | What it does |
+|-----------|--------------|
+| `massalarme = true` | Rings gently. One tap dismisses it. |
+| `soft_massalarme = true` | The same thing, spelt out. |
+| `hard_massalarme = true` | Rings the siren and keeps ringing until the scale reports a weight. Snooze still works. |
+
+**Hard wins** if a block carries both. `true`, `1`, `yes`, `y` and `on` all count
+as yes; anything else — including `false`, a blank, and a typo — is a no, because
+an alarm that goes off at 05:00 over a misspelt value is worse than one that
+stays quiet and can be looked at over breakfast. A block carrying none of them is
+not an alarm, so there is nothing to opt into and nothing to configure on the
+phone; the settings screen just lists the three keys.
+
+This used to be a regex matched against the task's title, which meant the alarm
+depended on spelling: rename "Acordar" to "Levantar" and it silently stopped
+happening, while an unrelated block called "wake up early" started ringing.
+Whether a block should wake you is a property of that block, so that is where it
+now lives.
 
 Derived alarms carry `origin: ontoplano`, are read-only in the app, and update in
 place on each sync, so your hand-made alarms are never touched. An activity
 repeated across several days collapses into one weekly alarm rather than becoming
-three unrelated single-day ones. They default to **soft** and can be snoozed like
-anything else.
+three unrelated single-day ones, and they can be snoozed like anything else.
 
 Publishing is retry-safe by construction: `external_id` is derived from the
 reading, so a resend comes back as a duplicate rather than a second point. A `403`

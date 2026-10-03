@@ -51,15 +51,11 @@ The phone client covers the plugin contract: derived `external_id`, duplicates
 treated as success, 422s dropped, 429 with `Retry-After`, configurable base URL,
 `whoami`, plugin manifest, stream declaration, schedule read. What is left:
 
-- [ ] Pin down what `PUT /api/v1/plugin` actually wants. The hosted ontoplano
-      rejects `Ontoplano.manifest()` with `each attribute key must be an
-      object`, so it expects a map of attribute descriptors where we send
-      `metaKeys` as a list of names. The call is best-effort now and no longer
-      fails the connection test, so this is cosmetic — the stream renders from
-      the server's defaults until it is fixed.
-- [ ] Import the *whole* declared metaKeys set into the manifest automatically
-      rather than by hand — right now `Ontoplano.manifest()` and what
-      `ReadingUploader` actually writes are kept in step by eye.
+- [ ] Declare the point `meta` keys somewhere too. The manifest now declares the
+      three task attribute keys the sync reads, which is what
+      `attributeKeys` is for; the keys `ReadingUploader` writes onto a published
+      point (`impedance`, `alarm_name`, `measurements`, `raw_value`) are a
+      different thing and ontoplano has no field for them.
 - [ ] Surface the pending-publish count somewhere better than a caption. A
       weigh-in stuck in the queue for a week should be visible without going
       looking.

@@ -14,13 +14,20 @@ import java.util.Locale
  * ontoplano reports *what is scheduled* and nothing else — it knows nothing
  * about alarms, sirens, scales or wifi, and it should stay that way. Deciding
  * which occurrences deserve an alarm, and whether that alarm is hard or soft, is
- * massalarme's business, and now the phone's: this is a port of the PC's
- * `schedule_sync.py`, which used to be the only place it existed.
+ * massalarme's business.
+ *
+ * The decision is read off the block's **attributes** — the user-defined
+ * key/value pairs ontoplano stores on a task and never interprets, exactly so
+ * that a plugin can define its own vocabulary. Marking the block that should
+ * wake you is a property of that block, so that is where it lives. It used to be
+ * a regex matched against the title, which meant the alarm depended on spelling:
+ * rename "Acordar" to "Levantar" and the alarm silently stopped happening.
  *
  * Pure functions over JSON, deliberately free of Android imports, so the rules
- * can be unit-tested and checked against the Python implementation — the two
- * must not drift, or the same task becomes two different alarms depending on
- * which side last synced.
+ * can be unit-tested. The PC daemon's `schedule_sync.py` still has the old
+ * YAML-configured title rules; nothing on the phone reads them, and the daemon
+ * no longer drives the phone, so the two are no longer two implementations of
+ * one thing.
  */
 object OntoplanoSchedule {
 
@@ -29,49 +36,58 @@ object OntoplanoSchedule {
     private val WEEKDAYS = AlarmSchedule.WEEKDAYS
 
     /**
-     * One mapping from an occurrence to an alarm kind.
-     *
-     * A rule with no conditions matches everything. That is a real choice a user
-     * can make ("every planned thing wakes me"), so it is allowed rather than
-     * treated as a mistake.
+     * The attribute vocabulary, derived from the source name so there is one
+     * place it is spelled. These three keys are declared to ontoplano in
+     * [Ontoplano.manifest], which is what makes them show up as this app's
+     * words rather than as three anonymous strings on a task.
      */
-    data class Rule(
-        val kind: String,
-        val title: Regex? = null,
-        val category: String? = null,
-        val label: String? = null
-    ) {
-        fun matches(occurrence: JSONObject): Boolean {
-            title?.let {
-                if (!it.containsMatchIn(occurrence.optString("title"))) return false
-            }
-            category?.let {
-                if (!occurrence.optString("category").equals(it, ignoreCase = true)) return false
-            }
-            label?.let {
-                if (!occurrence.optString("label").equals(it, ignoreCase = true)) return false
-            }
-            return true
-        }
-    }
+    /** Rings gently, dismissed with one tap. */
+    val ATTR_SOFT = "soft_${Ontoplano.SOURCE}"
+
+    /** Rings the siren and wants the scale. Beats [ATTR_SOFT] when both are set. */
+    val ATTR_HARD = "hard_${Ontoplano.SOURCE}"
+
+    /** The short spelling of [ATTR_SOFT], and the one to reach for. */
+    val ATTR_RING = Ontoplano.SOURCE
 
     /**
-     * Build the rule list from the one rule the phone's settings screen offers.
+     * What counts as yes.
      *
-     * Case-insensitive by default: "acordar" should match "Acordar", and nobody
-     * wants to remember to type `(?i)` to get there. An empty pattern means the
-     * user has not opted in, so nothing matches — never everything.
+     * Attribute values are strings, so this is where "true" becomes true. The
+     * list is closed rather than "anything that is not false": an alarm clock
+     * that rings at 05:00 because a value was misspelt is worse than one that
+     * stays quiet and can be looked at over breakfast.
      */
-    fun rulesFrom(pattern: String, kind: String): List<Rule> {
-        if (pattern.isBlank()) return emptyList()
-        val regex = runCatching { Regex(pattern, RegexOption.IGNORE_CASE) }.getOrNull()
-            ?: return emptyList()
-        return listOf(Rule(kind = kind, title = regex))
-    }
+    private val TRUE_VALUES = setOf("true", "1", "yes", "y", "on")
 
-    /** The alarm kind for this occurrence, or null if it deserves no alarm. */
-    fun classify(occurrence: JSONObject, rules: List<Rule>): String? =
-        rules.firstOrNull { it.matches(occurrence) }?.kind
+    /**
+     * The block's attributes, under either name.
+     *
+     * ontoplano answers the same object twice — as `attributes`, and as `meta`
+     * for plugins written before the rename. Reading both means this works
+     * against an older instance without a second code path.
+     */
+    private fun attributesOf(occurrence: JSONObject): JSONObject? =
+        occurrence.optJSONObject("attributes") ?: occurrence.optJSONObject("meta")
+
+    private fun isTrue(attributes: JSONObject, key: String): Boolean =
+        attributes.optString(key).trim().lowercase(Locale.US) in TRUE_VALUES
+
+    /**
+     * The alarm kind for this occurrence, or null if it deserves no alarm.
+     *
+     * Hard wins: somebody who has said both things about one block has asked
+     * for the stricter of the two, and guessing the other way lets a block that
+     * is supposed to need the scale be dismissed with a tap.
+     */
+    fun classify(occurrence: JSONObject): String? {
+        val attributes = attributesOf(occurrence) ?: return null
+        if (isTrue(attributes, ATTR_HARD)) return AlarmSchedule.KIND_HARD
+        if (isTrue(attributes, ATTR_RING) || isTrue(attributes, ATTR_SOFT)) {
+            return AlarmSchedule.KIND_SOFT
+        }
+        return null
+    }
 
     // ─── Occurrence → alarm ──────────────────────────────────────────
 
@@ -126,7 +142,7 @@ object OntoplanoSchedule {
      * weekly alarm carrying all their weekdays. A title that genuinely happens
      * once in the window stays a dated alarm.
      */
-    fun buildAlarms(schedule: JSONObject, rules: List<Rule>, nowMs: Long): List<JSONObject> {
+    fun buildAlarms(schedule: JSONObject, nowMs: Long): List<JSONObject> {
         val occurrences = schedule.optJSONArray("occurrences") ?: JSONArray()
 
         data class Matched(val occurrence: JSONObject, val kind: String, val at: LocalMoment)
@@ -134,7 +150,7 @@ object OntoplanoSchedule {
         val matched = mutableListOf<Matched>()
         for (i in 0 until occurrences.length()) {
             val occurrence = occurrences.optJSONObject(i) ?: continue
-            val kind = classify(occurrence, rules) ?: continue
+            val kind = classify(occurrence) ?: continue
             val at = parseLocal(occurrence.optString("at_local")) ?: continue
             matched.add(Matched(occurrence, kind, at))
         }

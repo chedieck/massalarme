@@ -145,15 +145,12 @@ _DEFAULT_CONFIG = {
         "timeout_seconds": 15,
         "batch_size": 500,
         # Derive alarms from the ontoplano planner. Which occurrences become
-        # alarms, and whether they are hard or soft, is decided here — ontoplano
-        # knows nothing about alarms and should not.
+        # alarms is marked on the blocks themselves, with the massalarme
+        # attributes — see schedule_sync. Nothing to configure here.
         "schedule": {
             "enabled": False,
             "days": 7,
             "poll_minutes": 30,
-            "rules": [
-                {"match": {"title": "(?i)wake up|acordar"}, "kind": "hard"},
-            ],
         },
     },
 }
@@ -1525,12 +1522,6 @@ async def _handle_sync_status(request: web.Request) -> web.Response:
         status["ontoplano_timezone"] = _ontoplano_identity.get("timezone")
         status["ontoplano_scopes"] = _ontoplano_identity.get("scopes", [])
 
-    rules = (section.get("schedule") or {}).get("rules") or []
-    if rules:
-        match = rules[0].get("match") or {}
-        status["ontoplano_pattern"] = match.get("title", "")
-        status["ontoplano_kind"] = rules[0].get("kind", "hard")
-
     return web.json_response(status)
 
 
@@ -1611,14 +1602,6 @@ async def _handle_ws(request: web.Request) -> web.WebSocketResponse:
                         _current_alarms.update(merged)
                         logger.info("Alarms merged via WS from %s", peer)
                         await broadcast_alarms(_current_alarms, exclude=ws)
-                    elif msg_type == "set_ontoplano_rule":
-                        # The phone chooses which planner tasks become alarms;
-                        # this side owns the token and does the fetching.
-                        _apply_ontoplano_rule(
-                            payload.get("pattern", ""), payload.get("kind", "hard")
-                        )
-                        if _schedule_refresh is not None:
-                            _schedule_refresh.set()
                     elif msg_type == "alarm_dismissed":
                         logger.info("Alarm dismissed via passphrase (from %s)", peer)
                         if _alarm_dismissed is not None:
@@ -1939,34 +1922,6 @@ async def main_loop() -> None:
 
 
 
-def _apply_ontoplano_rule(pattern: str, kind: str) -> None:
-    """Persist the phone's task-matching rule into config.yaml.
-
-    Stored as the single rule under `ontoplano.schedule.rules`, replacing
-    whatever was there: the phone's screen is the source of truth for it, and
-    silently keeping a stale rule alongside would be worse than surprising.
-    """
-    pattern = (pattern or "").strip()
-    kind = kind if kind in (schedule_sync.KIND_HARD, schedule_sync.KIND_SOFT) else "hard"
-
-    if pattern:
-        try:
-            re.compile(pattern)
-        except re.error as exc:
-            logger.warning("Phone sent an invalid ontoplano pattern %r: %s", pattern, exc)
-            return
-
-    section = _current_cfg.setdefault("ontoplano", {}).setdefault("schedule", {})
-    section["rules"] = [{"match": {"title": pattern}, "kind": kind}] if pattern else []
-    section["enabled"] = bool(pattern)
-    _save_config(_current_cfg)
-
-    logger.info(
-        "ontoplano rule from phone: %s",
-        f"title ~ {pattern!r} -> {kind}" if pattern else "cleared",
-    )
-
-
 async def _schedule_sync_loop(cfg: dict) -> None:
     """Poll the ontoplano planner and turn occurrences into alarms.
 
@@ -1990,47 +1945,37 @@ async def _schedule_sync_loop(cfg: dict) -> None:
     try:
         while True:
             section = (_current_cfg.get("ontoplano") or {}).get("schedule") or {}
-            rules = schedule_sync.parse_rules(section.get("rules") or [])
             days = int(section.get("days", 7))
             poll_seconds = max(60, int(section.get("poll_minutes", 30)) * 60)
 
-            if rules:
-                try:
-                    schedule = await client.fetch_schedule(days=days)
-                    now_ms = _now_ms()
-                    derived = schedule_sync.build_alarms(schedule, rules, now_ms)
+            # No rule to check any more: a block carrying one of the massalarme
+            # attributes rings, and one that does not, does not. A week with
+            # none of them marked derives nothing, which retires whatever was
+            # derived before — the same outcome clearing the old pattern had.
+            try:
+                schedule = await client.fetch_schedule(days=days)
+                now_ms = _now_ms()
+                derived = schedule_sync.build_alarms(schedule, now_ms)
 
-                    current, _ = load_alarms()
-                    merged = schedule_sync.merge_into_schedule(
-                        current, derived, now_ms=now_ms, horizon_days=days
-                    )
-
-                    if merged != current:
-                        _save_alarms(merged)
-                        _current_alarms = merged
-                        logger.info(
-                            "ontoplano schedule applied: %d alarm(s) derived", len(derived)
-                        )
-                        await broadcast_alarms(merged)
-                    else:
-                        logger.debug("ontoplano schedule unchanged")
-
-                except ontoplano.OntoplanoError as exc:
-                    logger.warning("ontoplano schedule fetch failed: %s", exc)
-                except Exception:
-                    logger.exception("Unexpected error in schedule sync")
-            else:
-                # No rule set yet. Retire anything previously derived, so
-                # clearing the pattern on the phone actually clears the alarms.
                 current, _ = load_alarms()
                 merged = schedule_sync.merge_into_schedule(
-                    current, [], now_ms=_now_ms(), horizon_days=days
+                    current, derived, now_ms=now_ms, horizon_days=days
                 )
+
                 if merged != current:
                     _save_alarms(merged)
                     _current_alarms = merged
-                    logger.info("ontoplano rule cleared – derived alarms retired")
+                    logger.info(
+                        "ontoplano schedule applied: %d alarm(s) derived", len(derived)
+                    )
                     await broadcast_alarms(merged)
+                else:
+                    logger.debug("ontoplano schedule unchanged")
+
+            except ontoplano.OntoplanoError as exc:
+                logger.warning("ontoplano schedule fetch failed: %s", exc)
+            except Exception:
+                logger.exception("Unexpected error in schedule sync")
 
             # Wake early when the phone changes the rule.
             _schedule_refresh.clear()
@@ -2195,11 +2140,6 @@ async def _run_schedule_once(cfg: dict) -> int:
         print("ontoplano is not configured. See --check-ontoplano.")
         return 1
 
-    rules = schedule_sync.parse_rules(section.get("rules") or [])
-    if not rules:
-        print("No schedule rules configured under ontoplano.schedule.rules.")
-        return 1
-
     days = int(section.get("days", 7))
     client = ontoplano.HttpOntoplanoClient(op_config)
     try:
@@ -2211,7 +2151,7 @@ async def _run_schedule_once(cfg: dict) -> int:
         await client.close()
 
     now_ms = _now_ms()
-    derived = schedule_sync.build_alarms(schedule, rules, now_ms)
+    derived = schedule_sync.build_alarms(schedule, now_ms)
     current, _ = load_alarms()
     merged = schedule_sync.merge_into_schedule(
         current, derived, now_ms=now_ms, horizon_days=days

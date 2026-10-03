@@ -49,7 +49,13 @@ object OntoplanoSync {
         try {
             // Idempotent, and cheap next to the round trips below. Declaring
             // every time is what makes a restored-from-backup server work.
-            client.declarePlugin()
+            //
+            // Neither is allowed to fail a sync. The manifest only names our
+            // attribute keys for ontoplano's own screens, and `plugin:declare`
+            // is an optional scope — a token without it would otherwise turn
+            // every sync into a failure that publishes nothing.
+            runCatching { client.declarePlugin() }
+                .onFailure { Log.i(TAG, "Plugin manifest not accepted: ${it.message}") }
             client.declareStream()
 
             uploaded = ReadingUploader(context, client).upload()
@@ -82,18 +88,9 @@ object OntoplanoSync {
      * an open Alarms tab that is not told simply keeps showing yesterday.
      */
     private fun syncSchedule(context: Context, client: Ontoplano): Int {
-        val rules = OntoplanoSchedule.rulesFrom(
-            AppSettings.ontoplanoPattern(context),
-            AppSettings.ontoplanoKind(context)
-        )
-        if (rules.isEmpty()) {
-            Log.d(TAG, "No ontoplano alarm rule set — not reading the schedule")
-            return 0
-        }
-
         val schedule = client.fetchSchedule(HORIZON_DAYS)
         val now = System.currentTimeMillis()
-        val derived = OntoplanoSchedule.buildAlarms(schedule, rules, now)
+        val derived = OntoplanoSchedule.buildAlarms(schedule, now)
 
         val prefs = AppSettings.prefs(context)
         val current = prefs.getString(AppSettings.KEY_ALARMS, null)
@@ -114,7 +111,6 @@ object OntoplanoSync {
 
         prefs.edit()
             .putString(AppSettings.KEY_ALARMS, merged.toString())
-            .putLong(AppSettings.KEY_LAST_SYNC, now)
             .apply()
 
         AlarmScheduler.rescheduleNext(context)
@@ -135,6 +131,7 @@ object OntoplanoSync {
         is Ontoplano.AuthFailure -> "ontoplano rejected the token — paste a new one"
         is Ontoplano.ScopeFailure ->
             "Token is missing a scope. Needs ${Ontoplano.REQUIRED_SCOPES.joinToString(", ")}"
+        is Ontoplano.StreamMissingFailure -> "ontoplano has no massalarme.weight stream yet"
         is Ontoplano.PlanLimitFailure -> "ontoplano plan limit reached: ${failure.message}"
         is Ontoplano.RateLimitedFailure -> "Rate limited — will retry"
         else -> failure.message ?: "sync failed"
@@ -149,12 +146,21 @@ object OntoplanoSync {
         }
     }
 
+    /**
+     * A sync that got all the way through.
+     *
+     * `KEY_LAST_SYNC` is written here, and only here. It used to be a side
+     * effect of the alarm set changing, so the Alarms tab claimed it had never
+     * synced for as long as the planner happened to be stable — which, with no
+     * alarm rule configured, was forever.
+     */
     private fun recordSuccess(context: Context) {
         AppSettings.prefs(context).edit()
             .putString(
                 AppSettings.KEY_LAST_UPLOAD_OK,
                 ScaleCodec.utcIso(System.currentTimeMillis())
             )
+            .putLong(AppSettings.KEY_LAST_SYNC, System.currentTimeMillis())
             .remove(AppSettings.KEY_LAST_UPLOAD_ERROR)
             .apply()
     }

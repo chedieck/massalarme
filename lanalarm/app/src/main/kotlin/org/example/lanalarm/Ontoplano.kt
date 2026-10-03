@@ -57,29 +57,81 @@ class Ontoplano(private val config: Config) {
         val REQUIRED_SCOPES = listOf("streams:write", "schedule:read")
 
         /**
-         * Scopes that only buy presentation. A token without these connects,
-         * publishes and rings exactly the same; the stream is just rendered
-         * from the server's defaults instead of from our manifest.
+         * Scopes worth having that nothing depends on:
+         *
+         *  - `plugin:declare`  name our attribute keys, so ontoplano shows them
+         *                      as this app's words on a task.
+         *  - `streams:read`    read published weigh-ins back, so the Weight tab
+         *                      shows the whole history and not only what this
+         *                      phone happened to measure.
+         *
+         * A token without them connects, publishes and rings exactly the same.
          */
-        val OPTIONAL_SCOPES = listOf("plugin:declare")
+        val OPTIONAL_SCOPES = listOf("plugin:declare", "streams:read")
 
         val ALL_SCOPES = REQUIRED_SCOPES + OPTIONAL_SCOPES
 
         /**
-         * What this plugin publishes and which meta keys it sets, declared at
-         * startup so ontoplano can render the stream without guessing.
+         * The scopes a `/api/v1/me` answer reports.
          *
-         * The shape here is unconfirmed against the hosted server, which
-         * answers this body with `each attribute key must be an object` — it
-         * wants a map of descriptors where we send a list of names. Until that
-         * is pinned down, treat [declarePlugin] as best-effort: it decides
-         * nothing about whether the connection works.
+         * `/me` answers `{user_id, scopes, timezone}` and no display name, so
+         * "connected as" was never a question this endpoint could answer. What
+         * it does answer is the one worth asking during setup: whether this
+         * token is allowed to do the things the app needs.
+         */
+        fun scopesOf(me: JSONObject): List<String> {
+            val scopes = me.optJSONArray("scopes") ?: return emptyList()
+            return (0 until scopes.length()).mapNotNull {
+                scopes.optString(it).takeIf { s -> s.isNotBlank() }
+            }
+        }
+
+        /** Required scopes this token does not carry. Empty is the happy case. */
+        fun missingScopes(me: JSONObject): List<String> {
+            val granted = scopesOf(me).toSet()
+            return REQUIRED_SCOPES.filterNot { it in granted }
+        }
+
+        /** One declared attribute key, in the shape `/api/v1/plugin` wants. */
+        private fun attributeKey(key: String, description: String) = JSONObject().apply {
+            put("key", key)
+            put("description", description)
+            put("example", "true")
+        }
+
+        /**
+         * The vocabulary this plugin reads off a task, declared so ontoplano can
+         * say who a key belongs to instead of listing an anonymous string.
+         *
+         * `attributeKeys` is a list of objects, and sending a list of bare names
+         * is what earned the rejection `each attribute key must be an object`.
+         * The old field name `metaKeys` is still read by the server but warns,
+         * so it is not used here.
          */
         fun manifest(): JSONObject = JSONObject().apply {
             put("source", SOURCE)
             put("name", "Massalarme")
             put("description", "Alarm clock that will not stop until you weigh yourself.")
-            put("metaKeys", JSONArray(listOf("impedance", "alarm_name", "measurements", "raw_value")))
+            put(
+                "attributeKeys",
+                JSONArray(
+                    listOf(
+                        attributeKey(
+                            OntoplanoSchedule.ATTR_RING,
+                            "Ring an alarm for this block. Soft: one tap dismisses it."
+                        ),
+                        attributeKey(
+                            OntoplanoSchedule.ATTR_SOFT,
+                            "The same as ${OntoplanoSchedule.ATTR_RING}, spelt out."
+                        ),
+                        attributeKey(
+                            OntoplanoSchedule.ATTR_HARD,
+                            "Ring the siren and keep ringing until the scale reports a " +
+                                "weight. Wins if the soft key is set too."
+                        )
+                    )
+                )
+            )
         }
 
         fun streamDeclaration(): JSONObject = JSONObject().apply {
@@ -250,6 +302,26 @@ class Ontoplano(private val config: Config) {
             throw e
         }
         Log.i(TAG, "Stream $STREAM_SLUG declared")
+    }
+
+    /**
+     * Published weigh-ins, newest first.
+     *
+     * Needs `streams:read`, which is why every caller has to cope with this
+     * failing: the history is a nicety, and a phone that only knows its own
+     * readings is still a working alarm clock. The point of reading them back
+     * is the history from before this phone existed — a backfilled scale log,
+     * or a weigh-in taken on another device.
+     */
+    fun fetchPoints(limit: Int): JSONObject {
+        val bounded = limit.coerceIn(1, MAX_POINTS_PER_REQUEST)
+        return JSONObject(
+            execute(
+                request("/api/v1/streams/$STREAM_SLUG/points?order=desc&limit=$bounded")
+                    .get()
+                    .build()
+            )
+        )
     }
 
     /** Token introspection. Needs no scope, so it is the honest setup check. */
