@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -34,10 +35,8 @@ import java.util.Locale
 class MainActivity : AppCompatActivity() {
 
     companion object {
+        private const val TAG = "MainActivity"
         private const val KEY_OVERLAY_REQUESTED = "overlay_permission_requested"
-
-        /** What the token field shows once a token is stored. Never the token. */
-        private const val TOKEN_MASK = "••••••••••••"
     }
 
     private lateinit var tabSettings: ImageView
@@ -85,6 +84,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ontoplanoDetail: TextView
     private lateinit var ontoplanoBaseUrl: EditText
     private lateinit var ontoplanoToken: EditText
+    private lateinit var ontoplanoTokenStored: View
+    private lateinit var ontoplanoTokenState: TextView
+    private lateinit var ontoplanoTokenReplace: Button
+
+    /**
+     * True while the token field is open over a token that is already stored.
+     * Reset on every successful save, so the field closes again rather than
+     * sitting there with a secret in it.
+     */
+    private var replacingToken = false
     private lateinit var ontoplanoSave: Button
     private lateinit var scanSecretButton: Button
     private lateinit var ontoplanoStatus: TextView
@@ -228,6 +237,9 @@ class MainActivity : AppCompatActivity() {
         ontoplanoDetail = findViewById(R.id.ontoplano_detail)
         ontoplanoBaseUrl = findViewById(R.id.ontoplano_base_url)
         ontoplanoToken = findViewById(R.id.ontoplano_token)
+        ontoplanoTokenStored = findViewById(R.id.ontoplano_token_stored)
+        ontoplanoTokenState = findViewById(R.id.ontoplano_token_state)
+        ontoplanoTokenReplace = findViewById(R.id.ontoplano_token_replace)
         ontoplanoSave = findViewById(R.id.ontoplano_save)
         scanSecretButton = findViewById(R.id.scan_secret)
         ontoplanoStatus = findViewById(R.id.ontoplano_status)
@@ -285,6 +297,12 @@ class MainActivity : AppCompatActivity() {
             if (ontoplanoToggle.isChecked) testOntoplano()
         }
         ontoplanoSave.setOnClickListener { saveOntoplanoConnection() }
+        ontoplanoTokenReplace.setOnClickListener {
+            replacingToken = true
+            ontoplanoToken.setText("")
+            renderOntoplano()
+            ontoplanoToken.requestFocus()
+        }
         scanSecretButton.setOnClickListener { requestScan() }
         ontoplanoKindHard.setOnClickListener { selectOntoplanoKind(AlarmSchedule.KIND_HARD) }
         ontoplanoKindSoft.setOnClickListener { selectOntoplanoKind(AlarmSchedule.KIND_SOFT) }
@@ -486,12 +504,26 @@ class MainActivity : AppCompatActivity() {
         ontoplanoToggle.isChecked = enabled
 
         if (!ontoplanoBaseUrl.hasFocus()) {
-            ontoplanoBaseUrl.setText(AppSettings.ontoplanoBaseUrl(this).orEmpty())
+            // Prefilled rather than demanded: all but the self-hosters want
+            // this exact address, and it is still an ordinary editable field.
+            ontoplanoBaseUrl.setText(
+                AppSettings.ontoplanoBaseUrl(this) ?: Ontoplano.DEFAULT_BASE_URL
+            )
         }
-        if (!ontoplanoToken.hasFocus()) {
-            // The token itself is never rendered back. A field that shows the
-            // secret is a field that ends up in a screenshot.
-            ontoplanoToken.setText(if (AppSettings.ontoplanoToken(this) != null) TOKEN_MASK else "")
+
+        // A stored token is never rendered back, in dots or otherwise: the
+        // field is simply replaced by the fact that there is one, plus the way
+        // to swap it. The old masked field made "leave it alone" and "the
+        // secret is twelve bullets" the same gesture.
+        val hasToken = AppSettings.ontoplanoToken(this) != null
+        val fieldOpen = !hasToken || replacingToken
+        ontoplanoTokenStored.visibility = if (hasToken) View.VISIBLE else View.GONE
+        ontoplanoToken.visibility = if (fieldOpen) View.VISIBLE else View.GONE
+        ontoplanoTokenReplace.visibility = if (replacingToken) View.GONE else View.VISIBLE
+        ontoplanoTokenState.text = if (AppSettings.ontoplanoTokenProtected(this)) {
+            "Token stored, encrypted on this device"
+        } else {
+            "Token stored — unencrypted, this device's keystore refused it"
         }
         if (!ontoplanoPattern.hasFocus()) {
             ontoplanoPattern.setText(AppSettings.ontoplanoPattern(this))
@@ -520,13 +552,11 @@ class MainActivity : AppCompatActivity() {
                 append("The app works fully without it.")
                 return@buildString
             }
+            append("Token scopes: ")
             append(Ontoplano.REQUIRED_SCOPES.joinToString(", "))
-            if (AppSettings.ontoplanoToken(this@MainActivity) != null &&
-                !AppSettings.ontoplanoTokenProtected(this@MainActivity)
-            ) {
-                // Worth saying out loud rather than pretending.
-                append("\nToken stored unencrypted — this device's keystore refused it.")
-            }
+            append(" — and ")
+            append(Ontoplano.OPTIONAL_SCOPES.joinToString(", "))
+            append(" if your server offers it.")
             lastOk?.let { append("\nLast published ").append(it) }
             error?.let { append("\n").append(it) }
         }
@@ -539,15 +569,16 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val typed = ontoplanoToken.text.toString().trim()
-        // The mask means "leave the stored token alone", not "the token is dots".
-        val token = typed.takeIf { it.isNotEmpty() && it != TOKEN_MASK }
+        val token = ontoplanoToken.text.toString().trim().takeIf { it.isNotEmpty() }
         if (token == null && AppSettings.ontoplanoToken(this) == null) {
             ontoplanoStatus.text = "A token is required"
             return
         }
 
         AppSettings.setOntoplano(this, baseUrl, token, enabled = true)
+        // Close the field again, so a saved secret is not left sitting in it.
+        replacingToken = false
+        ontoplanoToken.setText("")
         renderOntoplano()
         testOntoplano()
     }
@@ -557,7 +588,16 @@ class MainActivity : AppCompatActivity() {
      *
      * "Saved" is not the answer to the question a user is actually asking here,
      * which is whether their alarm will still work tomorrow. `/me` needs no
-     * scope, so it is the honest first call.
+     * scope, so it is the honest first call — and its answer is the whole
+     * verdict.
+     *
+     * The two declarations that follow are housekeeping, and neither is allowed
+     * to speak for the connection. A server that dislikes our plugin manifest
+     * used to replace "Connected as you" with its own validation complaint —
+     * `each attribute key must be an object` — which reads as a broken setup
+     * when nothing about the setup is broken. The manifest is presentation
+     * metadata; the stream re-declares itself on the first 404 during a real
+     * publish anyway.
      */
     private fun testOntoplano() {
         ontoplanoStatus.text = "Checking…"
@@ -572,8 +612,10 @@ class MainActivity : AppCompatActivity() {
                 val user = listOf("email", "name", "username")
                     .firstNotNullOfOrNull { me.optString(it).takeIf { v -> v.isNotBlank() } }
                     ?: "connected"
-                client.declarePlugin()
-                client.declareStream()
+                runCatching { client.declarePlugin() }
+                    .onFailure { Log.i(TAG, "Plugin manifest not accepted: ${it.message}") }
+                runCatching { client.declareStream() }
+                    .onFailure { Log.i(TAG, "Stream not declared yet: ${it.message}") }
                 "Connected as $user"
             } catch (e: Ontoplano.Failure) {
                 OntoplanoSync.describe(e)

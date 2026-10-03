@@ -94,6 +94,28 @@ class OntoplanoClientTest {
         )
     }
 
+    /**
+     * A server that dislikes the manifest must not look like a broken token.
+     *
+     * The hosted ontoplano answers the current manifest with
+     * `each attribute key must be an object`, and that string once became the
+     * settings screen's verdict on the whole connection. The client's job is to
+     * report it as what it is — a rejected payload, permanently — and leave the
+     * caller free to shrug. `MainActivity.testOntoplano` does exactly that.
+     */
+    @Test
+    fun `a rejected plugin manifest is a permanent failure carrying the server's reason`() {
+        enqueue(422, """{"error":{"message":"each attribute key must be an object"}}""")
+
+        try {
+            client().declarePlugin()
+            fail("a 422 must not pass for a declared manifest")
+        } catch (e: Ontoplano.Failure) {
+            assertEquals("each attribute key must be an object", e.message)
+            assertFalse("the payload will never become right by retrying", e.retryable)
+        }
+    }
+
     @Test
     fun `an already-declared stream is not an error`() {
         // 409 is the server saying the stream is exactly as we wanted it.

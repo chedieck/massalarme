@@ -233,16 +233,64 @@
                 style="@style/SettingsCaption"
                 android:text="Publishes weigh-ins and turns planned tasks into alarms. The app works fully without it." />
 
+            <TextView
+                style="@style/SettingsLabel"
+                android:layout_marginTop="12dp"
+                android:text="Server address" />
+
+            <TextView
+                style="@style/SettingsCaption"
+                android:text="The hosted ontoplano unless you run your own." />
+
             <EditText
                 android:id="@+id/ontoplano_base_url"
                 style="@style/SettingsInput"
-                android:hint="https://ontoplano.example.com"
+                android:hint="https://app.ontoplano.com"
                 android:inputType="textUri" />
+
+            <TextView
+                style="@style/SettingsLabel"
+                android:layout_marginTop="12dp"
+                android:text="API token" />
+
+            <TextView
+                style="@style/SettingsCaption"
+                android:text="Created under ontoplano → Settings → Integrations, with the scopes listed above. Not your ontoplano password." />
+
+            <!--
+              A stored token is shown as a fact, not as dots in an editable
+              field: a field full of dots invites a half-delete that leaves
+              some real characters behind, and leaves nobody able to tell
+              whether the dots are the secret or a placeholder for it.
+            -->
+            <LinearLayout
+                android:id="@+id/ontoplano_token_stored"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:baselineAligned="false"
+                android:layout_marginTop="8dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/ontoplano_token_state"
+                    style="@style/SettingsValue"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:text="Token stored" />
+
+                <Button
+                    android:id="@+id/ontoplano_token_replace"
+                    style="@style/SettingsGhostButton"
+                    android:layout_width="wrap_content"
+                    android:layout_marginTop="0dp"
+                    android:text="Replace" />
+            </LinearLayout>
 
             <EditText
                 android:id="@+id/ontoplano_token"
                 style="@style/SettingsInput"
-                android:hint="Access token"
+                android:hint="Paste the token"
                 android:inputType="textPassword" />
 
             <LinearLayout

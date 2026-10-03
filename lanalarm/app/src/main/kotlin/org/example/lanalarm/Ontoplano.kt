@@ -42,21 +42,38 @@ class Ontoplano(private val config: Config) {
         /** The server caps a push at this many points. */
         const val MAX_POINTS_PER_REQUEST = 500
 
+        /** Where the hosted ontoplano lives, so nobody has to type it. */
+        const val DEFAULT_BASE_URL = "https://app.ontoplano.com"
+
         /**
-         * Scopes this app asks for, and why:
+         * Scopes without which a feature simply does not work:
          *
          *  - `streams:write`   publish weigh-ins. The whole point.
          *  - `schedule:read`   read planner occurrences, so a task can ring.
-         *  - `plugin:declare`  register the manifest below.
          *
          * `streams:read` is deliberately absent: massalarme is the source of
          * truth for its own readings and never needs them back.
          */
-        val REQUIRED_SCOPES = listOf("streams:write", "schedule:read", "plugin:declare")
+        val REQUIRED_SCOPES = listOf("streams:write", "schedule:read")
+
+        /**
+         * Scopes that only buy presentation. A token without these connects,
+         * publishes and rings exactly the same; the stream is just rendered
+         * from the server's defaults instead of from our manifest.
+         */
+        val OPTIONAL_SCOPES = listOf("plugin:declare")
+
+        val ALL_SCOPES = REQUIRED_SCOPES + OPTIONAL_SCOPES
 
         /**
          * What this plugin publishes and which meta keys it sets, declared at
          * startup so ontoplano can render the stream without guessing.
+         *
+         * The shape here is unconfirmed against the hosted server, which
+         * answers this body with `each attribute key must be an object` — it
+         * wants a map of descriptors where we send a list of names. Until that
+         * is pinned down, treat [declarePlugin] as best-effort: it decides
+         * nothing about whether the connection works.
          */
         fun manifest(): JSONObject = JSONObject().apply {
             put("source", SOURCE)
@@ -207,6 +224,10 @@ class Ontoplano(private val config: Config) {
      * Idempotent, so it runs at every startup rather than being remembered as
      * "done" — a server restored from a backup would otherwise never learn
      * about a plugin that declared itself once, months ago.
+     *
+     * Throws like any other call, but no caller should treat that as fatal:
+     * see [manifest] for why. Cosmetic metadata is not a reason to tell
+     * somebody their alarm clock is broken.
      */
     fun declarePlugin() {
         val body = manifest().toString().toRequestBody(JSON)

@@ -176,9 +176,9 @@ object AppSettings {
             .putString(KEY_ONTOPLANO_BASE_URL, Provisioning.normaliseBase(baseUrl))
             .putBoolean(KEY_ONTOPLANO_ENABLED, enabled)
             .apply()
-        // Only overwrite the token when one was actually supplied: the settings
-        // screen shows a masked field, and saving it back would otherwise store
-        // the mask.
+        // Only overwrite the token when one was actually supplied. Saving the
+        // server address alone is an ordinary thing to want, and must not
+        // require re-pasting a token that is already stored.
         token?.let { SecretStore.put(context, KEY_ONTOPLANO_TOKEN, it) }
     }
 
